@@ -721,6 +721,13 @@ join_type = st.selectbox(
 )
 how = "left" if join_type.startswith("Left") else "inner"
 
+st.subheader("Merge quality controls")
+exclude_unmatched = st.checkbox(
+    "Exclude records not matched across files (recommended)",
+    value=True,
+    help="Removes records that do not match the base file (prevents orphan rows). Shows a summary of excluded rows.",
+)
+
 merged = dfs[base_idx].copy()
 base_key = file_configs[base_idx]["key_col"]
 
@@ -728,49 +735,76 @@ if base_key not in merged.columns:
     st.error(f"Base merge key '{base_key}' not found in base file ({file_configs[base_idx]['name']}).")
     st.stop()
 
-# --- Normalise base key ---
+# Normalise base key
 merged[base_key] = normalise_merge_key(merged[base_key])
+
 blank_base = (merged[base_key] == "").sum()
 if blank_base > 0:
     st.warning(f"Base dataset has {blank_base:,} blank '{base_key}' keys. These rows will not match other files.")
 
-# Merge all other dfs into base
+exclusion_notes = []  # capture messages for the UI
+
 for j in range(len(dfs)):
     if j == base_idx:
         continue
 
     df_j = dfs[j].copy()
     key_j = file_configs[j]["key_col"]
+    role_j = file_configs[j]["role"]
+    file_j = file_configs[j]["name"]
 
     if key_j not in df_j.columns:
-        st.error(f"Merge key '{key_j}' not found in file: {file_configs[j]['name']}")
+        st.error(f"Merge key '{key_j}' not found in file: {file_j}")
         st.stop()
 
-    # --- Normalise merge key in this file ---
+    # Normalise merge key on the right
     df_j[key_j] = normalise_merge_key(df_j[key_j])
 
-    # --- Drop rows with blank keys to prevent 'orphan' rows ---
+    # Drop blank keys in the right-hand file (prevents keyless rows)
     before = len(df_j)
     df_j = df_j[df_j[key_j] != ""]
-    dropped = before - len(df_j)
-    if dropped > 0:
-        st.info(f"Dropped {dropped:,} rows from '{file_configs[j]['name']}' with blank merge key '{key_j}'.")
+    dropped_blank = before - len(df_j)
+    if dropped_blank > 0:
+        exclusion_notes.append(f"{file_j}: dropped {dropped_blank:,} rows with blank key '{key_j}'")
 
-    # --- De-duplicate by key to prevent row multiplication ---
+    # De-duplicate right keys to avoid row multiplication
     if df_j[key_j].duplicated().any():
-        st.warning(
-            f"'{file_configs[j]['name']}' has duplicate keys in '{key_j}'. "
-            f"Keeping the first occurrence per key to avoid multiplying rows."
-        )
+        dup_n = int(df_j[key_j].duplicated().sum())
+        exclusion_notes.append(f"{file_j}: {dup_n:,} duplicate keys in '{key_j}' (kept first occurrence)")
         df_j = df_j.drop_duplicates(subset=[key_j], keep="first")
 
+    # Merge with indicator to detect unmatched
+    ind_col = f"__merge__{safe_filename(role_j, 24)}"
     merged = merged.merge(
         df_j,
         left_on=base_key,
         right_on=key_j,
         how=how,
-        suffixes=("", f"__{safe_filename(file_configs[j]['role'], 24)}"),
+        suffixes=("", f"__{safe_filename(role_j, 24)}"),
+        indicator=ind_col,
     )
+
+    # If requested, exclude unmatched rows
+    if exclude_unmatched:
+        # For LEFT join, "right_only" should not happen; for safety and for INNER/other edge cases, handle anyway.
+        right_only = (merged[ind_col] == "right_only").sum()
+        left_only = (merged[ind_col] == "left_only").sum()
+
+        if right_only > 0:
+            exclusion_notes.append(f"{file_j}: excluded {right_only:,} orphan rows (present only in this file)")
+            merged = merged[merged[ind_col] != "right_only"].copy()
+
+        # Note: left_only rows are base rows with no match in this file.
+        # We do NOT drop these by default because base is authoritative, but we report them.
+        if left_only > 0:
+            exclusion_notes.append(f"{file_j}: {left_only:,} base records had no match in this file")
+
+    # Drop indicator column (keeps dataset clean)
+    merged = merged.drop(columns=[ind_col], errors="ignore")
+
+# Display summary
+if exclusion_notes:
+    st.info("Merge notes:\n\n- " + "\n- ".join(exclusion_notes))
 
 st.success(f"Merged rows: {len(merged):,} | Columns: {merged.shape[1]:,}")
 st.dataframe(merged.head(preview_rows), use_container_width=True)
@@ -779,6 +813,7 @@ st.divider()
 st.subheader("3) Build export columns (map + transform + rename)")
 
 all_cols = list(merged.columns)
+
 
 tmpl_out: List[Dict[str, Any]] = list(tmpl_defaults.get("output_spec", [])) if tmpl_defaults else []
 default_num = max(10, len(tmpl_out))
