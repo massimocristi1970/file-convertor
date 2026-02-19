@@ -3,7 +3,7 @@ import json
 import re
 import zipfile
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import streamlit as st
@@ -15,7 +15,7 @@ except ImportError:
 
 
 # Short, direct name (not too long)
-APP_TITLE = "Data Mapper Exporter"
+APP_TITLE = "Data Mapper"
 
 
 # ---------- Helpers ----------
@@ -83,7 +83,6 @@ def read_sheet_as_dataframe(
       - "Cached values (recommended)" -> data_only=True
       - "Formula strings"             -> data_only=False
     """
-    # Use openpyxl engine explicitly for consistent behaviour
     df = pd.read_excel(
         io.BytesIO(xlsx_bytes),
         sheet_name=sheet_name,
@@ -146,6 +145,18 @@ def force_columns_to_text(df: pd.DataFrame, col_names: List[str]) -> pd.DataFram
     return df
 
 
+def normalise_merge_key(series: pd.Series) -> pd.Series:
+    """
+    Normalise merge keys to safe strings.
+    - trims whitespace
+    - removes trailing ".0" (common when IDs were numeric in Excel)
+    - preserves leading zeros (because we keep as strings)
+    """
+    s = series.map(lambda v: "" if pd.isna(v) else str(v).strip())
+    s = s.str.replace(r"\.0$", "", regex=True)
+    return s
+
+
 def normalise_dates(df: pd.DataFrame, date_format: str) -> pd.DataFrame:
     """
     Format datetime-like columns to consistent string format for CSV output.
@@ -165,7 +176,7 @@ def to_csv_bytes(
     escapechar_enabled: bool,
     date_format: str,
 ) -> bytes:
-    import csv  # noqa: F401  # kept as a useful dependency for quoting constants
+    import csv  # noqa: F401
 
     df_out = normalise_dates(df, date_format=date_format)
 
@@ -219,7 +230,6 @@ def read_uploaded_file_as_df(
 
     xlsx_bytes = file_obj.getvalue()
     if sheet_name is None:
-        # Default to first sheet
         wb_tmp = load_workbook_bytes(xlsx_bytes, data_only=(formula_mode == "Cached values (recommended)"))
         sheet_name = wb_tmp.sheetnames[0] if wb_tmp.sheetnames else None
         if sheet_name is None:
@@ -243,6 +253,11 @@ def _as_str(x: Any) -> str:
 
 
 def tf_none(x: str, p: Dict[str, Any]) -> str:
+    return x
+
+
+def tf_text_force(x: str, p: Dict[str, Any]) -> str:
+    # Useful to prevent Excel/scientific notation display issues; keeps value as text.
     return x
 
 
@@ -272,7 +287,6 @@ def tf_uk_mobile_add44(x: str, p: Dict[str, Any]) -> str:
         return "+44" + s[1:]
     if s.startswith("44"):
         return "+" + s
-    # fallback: assume missing country and leading 0
     return "+44" + s
 
 
@@ -331,6 +345,7 @@ def tf_regex_replace(x: str, p: Dict[str, Any]) -> str:
 
 TRANSFORM_FUNCS = {
     "None": tf_none,
+    "Text (force)": tf_text_force,
     # Presets (your examples)
     "UK Postcode (extract)": tf_uk_postcode,
     "Address first line (before comma)": tf_first_line,
@@ -387,7 +402,6 @@ Upload files and either:
 
 - **Convert** a single XLSX to CSV / ZIP (all sheets), or
 - **Merge + Map + Transform** across multiple uploads and export a clean output file.
-
 """
 )
 
@@ -402,7 +416,6 @@ with st.sidebar:
     st.divider()
     st.header("Export options")
 
-    # Keep your existing options (useful in both modes)
     header_row = st.number_input("Header row (1 = first row)", min_value=1, max_value=100, value=1, step=1)
 
     formula_mode = st.selectbox(
@@ -440,13 +453,12 @@ with st.sidebar:
     force_text_raw = st.text_area(
         "Force these columns to TEXT (preserve IDs/leading zeros)\nComma-separated column names:",
         value="",
-        placeholder="e.g. AccountNumber, SortCode, Postcode",
+        placeholder="e.g. AccountNumber, SortCode, Postcode, Mobile",
     )
     force_text_cols = parse_force_text_columns(force_text_raw)
 
     preview_rows = st.slider("Preview rows", min_value=5, max_value=200, value=25, step=5)
 
-    # Template section (future-proof)
     st.divider()
     st.subheader("Mapping template (optional)")
     template_file = st.file_uploader("Load template (.json)", type=["json"], key="template_json")
@@ -465,11 +477,7 @@ with st.sidebar:
 # Mode 1: Simple XLSX → CSV
 # ---------------------------
 if app_mode == "Simple XLSX → CSV":
-    st.markdown(
-        """
-This keeps your original converter behaviour intact.
-"""
-    )
+    st.markdown("This keeps your original converter behaviour intact.")
 
     uploaded = st.file_uploader("Upload .xlsx", type=["xlsx"])
 
@@ -486,7 +494,6 @@ This keeps your original converter behaviour intact.
 
     xlsx_bytes = uploaded.getvalue()
 
-    # Get sheet names safely
     try:
         wb_tmp = load_workbook_bytes(xlsx_bytes, data_only=(formula_mode == "Cached values (recommended)"))
         sheet_names = wb_tmp.sheetnames
@@ -629,7 +636,6 @@ if not uploaded_files:
     st.info("Upload one or more files to begin.")
     st.stop()
 
-# Load each file (user controls sheet/header/role/key)
 dfs: List[pd.DataFrame] = []
 file_configs: List[Dict[str, Any]] = []
 
@@ -660,13 +666,10 @@ for i, f in enumerate(uploaded_files):
         with c1:
             sheet_name = st.selectbox(f"Sheet ({f.name})", sheets, key=f"sheet_{i}")
         with c2:
-            hdr = st.number_input(
-                f"Header row ({f.name})", 1, 100, int(header_row), 1, key=f"hdr_{i}"
-            )
+            hdr = st.number_input(f"Header row ({f.name})", 1, 100, int(header_row), 1, key=f"hdr_{i}")
     else:
         hdr = 1  # not used for CSV
 
-    # Default key from template if present, else AppID
     default_key = str(tmpl_defaults.get("merge_keys_by_role", {}).get(role, "AppID"))
     key_col = st.text_input(
         f"Merge key column ({f.name})",
@@ -693,14 +696,7 @@ for i, f in enumerate(uploaded_files):
     st.dataframe(df.head(min(preview_rows, 25)), use_container_width=True)
 
     dfs.append(df)
-    file_configs.append(
-        {
-            "name": f.name,
-            "role": role,
-            "key_col": key_col,
-            "columns": list(df.columns),
-        }
-    )
+    file_configs.append({"name": f.name, "role": role, "key_col": key_col, "columns": list(df.columns)})
 
 roles = [cfg["role"] for cfg in file_configs]
 if len(set(roles)) != len(roles):
@@ -718,7 +714,11 @@ base_role = st.selectbox("Base dataset role (others merge into this)", roles, in
 base_idx = roles.index(base_role)
 
 join_type_default = tmpl_defaults.get("join_type", "Left (recommended)")
-join_type = st.selectbox("Join type", ["Left (recommended)", "Inner"], index=0 if join_type_default.startswith("Left") else 1)
+join_type = st.selectbox(
+    "Join type",
+    ["Left (recommended)", "Inner"],
+    index=0 if join_type_default.startswith("Left") else 1,
+)
 how = "left" if join_type.startswith("Left") else "inner"
 
 merged = dfs[base_idx].copy()
@@ -728,19 +728,42 @@ if base_key not in merged.columns:
     st.error(f"Base merge key '{base_key}' not found in base file ({file_configs[base_idx]['name']}).")
     st.stop()
 
+# --- Normalise base key ---
+merged[base_key] = normalise_merge_key(merged[base_key])
+blank_base = (merged[base_key] == "").sum()
+if blank_base > 0:
+    st.warning(f"Base dataset has {blank_base:,} blank '{base_key}' keys. These rows will not match other files.")
+
 # Merge all other dfs into base
 for j in range(len(dfs)):
     if j == base_idx:
         continue
 
-    df_j = dfs[j]
+    df_j = dfs[j].copy()
     key_j = file_configs[j]["key_col"]
+
     if key_j not in df_j.columns:
         st.error(f"Merge key '{key_j}' not found in file: {file_configs[j]['name']}")
         st.stop()
 
-    # If the key names differ, keep the right key to avoid clutter where possible.
-    # Suffix collisions on non-key columns.
+    # --- Normalise merge key in this file ---
+    df_j[key_j] = normalise_merge_key(df_j[key_j])
+
+    # --- Drop rows with blank keys to prevent 'orphan' rows ---
+    before = len(df_j)
+    df_j = df_j[df_j[key_j] != ""]
+    dropped = before - len(df_j)
+    if dropped > 0:
+        st.info(f"Dropped {dropped:,} rows from '{file_configs[j]['name']}' with blank merge key '{key_j}'.")
+
+    # --- De-duplicate by key to prevent row multiplication ---
+    if df_j[key_j].duplicated().any():
+        st.warning(
+            f"'{file_configs[j]['name']}' has duplicate keys in '{key_j}'. "
+            f"Keeping the first occurrence per key to avoid multiplying rows."
+        )
+        df_j = df_j.drop_duplicates(subset=[key_j], keep="first")
+
     merged = merged.merge(
         df_j,
         left_on=base_key,
@@ -757,7 +780,6 @@ st.subheader("3) Build export columns (map + transform + rename)")
 
 all_cols = list(merged.columns)
 
-# Template output spec
 tmpl_out: List[Dict[str, Any]] = list(tmpl_defaults.get("output_spec", [])) if tmpl_defaults else []
 default_num = max(10, len(tmpl_out))
 
@@ -805,7 +827,6 @@ for k in range(int(num_out)):
             key=f"out_{k}",
         )
 
-    # Params UI (only when relevant)
     params: Dict[str, Any] = {}
     if tf == "Digits: keep last N":
         params["n"] = st.number_input(
@@ -878,34 +899,25 @@ for k in range(int(num_out)):
             key=f"ric_{k}",
         )
 
-    out_rows.append(
-        {
-            "source": src,
-            "transform": tf,
-            "params": params,
-            "output_name": out_name.strip(),
-        }
-    )
+    out_rows.append({"source": src, "transform": tf, "params": params, "output_name": out_name.strip()})
 
-# Build final export df
 export_df = pd.DataFrame()
 
 for row in out_rows:
     src = row["source"]
-    out_name = row["output_name"]
+    out_col = row["output_name"]
     tf = row["transform"]
     params = row.get("params", {}) or {}
 
-    if src == "(blank)" or not out_name:
+    if src == "(blank)" or not out_col:
         continue
     if src not in merged.columns:
         continue
 
     try:
-        export_df[out_name] = apply_transform(merged[src], tf, params)
+        export_df[out_col] = apply_transform(merged[src], tf, params)
     except Exception:
-        # Defensive fallback: coerce to string then retry
-        export_df[out_name] = apply_transform(merged[src].astype(str), tf, params)
+        export_df[out_col] = apply_transform(merged[src].astype(str), tf, params)
 
 st.subheader("Export preview")
 st.caption(f"Rows: {len(export_df):,} | Columns: {export_df.shape[1]:,}")
