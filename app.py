@@ -278,16 +278,30 @@ def tf_first_line(x: str, p: Dict[str, Any]) -> str:
 
 
 def tf_uk_mobile_add44(x: str, p: Dict[str, Any]) -> str:
+    # Remove whitespace
     s = re.sub(r"\s+", "", x.strip())
+
     if not s:
         return ""
+
+    # Remove trailing .0 caused by float conversion
+    if s.endswith(".0"):
+        s = s[:-2]
+
+    # Remove any non-digit except leading +
     if s.startswith("+"):
-        return s
-    if s.startswith("0"):
-        return "+44" + s[1:]
-    if s.startswith("44"):
-        return "+" + s
-    return "+44" + s
+        digits = re.sub(r"\D", "", s[1:])
+        return "+" + digits
+
+    digits = re.sub(r"\D", "", s)
+
+    if digits.startswith("0"):
+        return "+44" + digits[1:]
+
+    if digits.startswith("44"):
+        return "+" + digits
+
+    return "+44" + digits
 
 
 def tf_digits_last_n(x: str, p: Dict[str, Any]) -> str:
