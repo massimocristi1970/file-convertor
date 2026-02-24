@@ -288,20 +288,19 @@ def tf_uk_mobile_add44(x: str, p: Dict[str, Any]) -> str:
     if s.endswith(".0"):
         s = s[:-2]
 
-    # Remove any non-digit except leading +
-    if s.startswith("+"):
-        digits = re.sub(r"\D", "", s[1:])
-        return "+" + digits
-
+    # Remove all non-digits
     digits = re.sub(r"\D", "", s)
 
-    if digits.startswith("0"):
-        return "+44" + digits[1:]
-
+    # Already starts with 44
     if digits.startswith("44"):
-        return "+" + digits
+        return digits
 
-    return "+44" + digits
+    # Starts with 0 → convert to 44
+    if digits.startswith("0"):
+        return "44" + digits[1:]
+
+    # Otherwise assume missing country code
+    return "44" + digits
 
 
 def tf_digits_last_n(x: str, p: Dict[str, Any]) -> str:
@@ -363,7 +362,7 @@ TRANSFORM_FUNCS = {
     # Presets (your examples)
     "UK Postcode (extract)": tf_uk_postcode,
     "Address first line (before comma)": tf_first_line,
-    "UK mobile → +44": tf_uk_mobile_add44,
+    "UK mobile → 44": tf_uk_mobile_add44,
     "Digits: keep last N": tf_digits_last_n,
     # Generic / future-proof
     "Extract by regex": tf_extract_regex,
