@@ -194,6 +194,23 @@ def to_csv_bytes(
     return buf.getvalue().encode(encoding, errors="replace")
 
 
+def to_xlsx_bytes(df: pd.DataFrame, date_format: str) -> bytes:
+    """Write a single DataFrame to .xlsx bytes (one sheet, default name)."""
+    buf = io.BytesIO()
+    df_out = normalise_dates(df, date_format=date_format)
+    df_out.to_excel(buf, index=False, sheet_name="Sheet1", engine="openpyxl")
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def to_json_bytes(df: pd.DataFrame, orient: str = "records", date_format: str = "%Y-%m-%d") -> bytes:
+    """Write DataFrame to JSON bytes. orient: 'records' (list of objects), 'split', 'index', 'columns'."""
+    df_out = normalise_dates(df, date_format=date_format)
+    # pandas to_json returns a string; default date_format is ISO
+    js = df_out.to_json(orient=orient, date_format="iso", force_ascii=False, indent=None)
+    return js.encode("utf-8", errors="replace")
+
+
 def read_csv_bytes_safely(file_bytes: bytes) -> pd.DataFrame:
     """
     Best-effort CSV read with encoding fallbacks.
@@ -413,7 +430,7 @@ st.markdown(
     """
 Upload files and either:
 
-- **Convert** a single XLSX to CSV / ZIP (all sheets), or
+- **Convert** a single file (XLSX or CSV) to CSV, XLSX, or JSON (with options per type), or
 - **Merge + Map + Transform** across multiple uploads and export a clean output file.
 """
 )
@@ -422,7 +439,7 @@ with st.sidebar:
     st.header("Mode")
     app_mode = st.radio(
         "Choose workflow",
-        options=["Simple XLSX → CSV", "Merge + Map + Transform"],
+        options=["Simple Convert", "Merge + Map + Transform"],
         index=0,
     )
 
@@ -487,142 +504,157 @@ with st.sidebar:
 
 
 # ---------------------------
-# Mode 1: Simple XLSX → CSV
+# Mode 1: Simple Convert (multiple conversion types and variations)
 # ---------------------------
-if app_mode == "Simple XLSX → CSV":
-    st.markdown("This keeps your original converter behaviour intact.")
+# Conversion types: (input_type, output_type) -> label
+SIMPLE_CONVERSIONS = [
+    ("XLSX → CSV", "xlsx", "csv"),
+    ("XLSX → JSON", "xlsx", "json"),
+    ("CSV → CSV", "csv", "csv"),
+    ("CSV → XLSX", "csv", "xlsx"),
+    ("CSV → JSON", "csv", "json"),
+]
 
-    uploaded = st.file_uploader("Upload .xlsx", type=["xlsx"])
+if app_mode == "Simple Convert":
+    conv_choice = st.selectbox(
+        "Conversion type",
+        options=[c[0] for c in SIMPLE_CONVERSIONS],
+        index=0,
+        help="Choose input and output format.",
+    )
+    conv = next(c for c in SIMPLE_CONVERSIONS if c[0] == conv_choice)
+    _label, input_type, output_type = conv
+
+    # File upload: accept type(s) for this conversion
+    if input_type == "xlsx":
+        uploaded = st.file_uploader("Upload .xlsx", type=["xlsx"])
+    else:
+        uploaded = st.file_uploader("Upload .csv", type=["csv"])
 
     if not uploaded:
-        st.info("Upload an .xlsx file to begin.")
+        st.info(f"Upload a .{input_type} file to begin.")
         st.stop()
 
-    export_mode = st.radio(
-        "Export mode",
-        options=["Single sheet → CSV", "All sheets → ZIP of CSVs"],
-        index=0,
-        horizontal=True,
-    )
+    file_bytes = uploaded.getvalue()
+    base_name = safe_filename(uploaded.name.rsplit(".", 1)[0])
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
 
-    xlsx_bytes = uploaded.getvalue()
+    # ----- XLSX input: optional "all sheets" variation
+    if input_type == "xlsx":
+        try:
+            wb_tmp = load_workbook_bytes(file_bytes, data_only=(formula_mode == "Cached values (recommended)"))
+            sheet_names = wb_tmp.sheetnames
+        except Exception as e:
+            st.error(f"Could not read workbook. Error: {e}")
+            st.stop()
+        if not sheet_names:
+            st.error("No worksheets found in the uploaded file.")
+            st.stop()
 
-    try:
-        wb_tmp = load_workbook_bytes(xlsx_bytes, data_only=(formula_mode == "Cached values (recommended)"))
-        sheet_names = wb_tmp.sheetnames
-    except Exception as e:
-        st.error(f"Could not read workbook. Error: {e}")
-        st.stop()
+        export_mode = st.radio(
+            "Export",
+            options=["Single sheet", "All sheets → ZIP"],
+            index=0,
+            horizontal=True,
+            help="Single sheet: one output file. All sheets: one ZIP containing one file per sheet.",
+        )
+        single_sheet_only = export_mode == "Single sheet"
+        sheet = st.selectbox("Select sheet", sheet_names) if single_sheet_only else sheet_names[0]
 
-    if not sheet_names:
-        st.error("No worksheets found in the uploaded file.")
-        st.stop()
+        def get_df_xlsx(sheet_name: str) -> pd.DataFrame:
+            return force_columns_to_text(
+                read_sheet_as_dataframe(
+                    file_bytes, sheet_name, int(header_row), formula_mode, drop_empty
+                ),
+                force_text_cols,
+            )
+
+        df = get_df_xlsx(sheet)
+        sheets_to_export = [sheet] if single_sheet_only else sheet_names
+    else:
+        # CSV input: single file
+        try:
+            df = read_csv_bytes_safely(file_bytes)
+            if drop_empty:
+                df = df.dropna(how="all").dropna(axis=1, how="all")
+            df = force_columns_to_text(df, force_text_cols)
+        except Exception as e:
+            st.error(f"Could not read CSV. Error: {e}")
+            st.stop()
+        single_sheet_only = True
+        sheets_to_export = ["data"]
+        sheet_names = ["data"]
+
+    # JSON-specific option (only when output is JSON)
+    json_orient = "records"
+    if output_type == "json":
+        json_orient_labels = [
+            "Records (list of objects)",
+            "Split (columns + index + data)",
+            "Index (rows as keys)",
+            "Columns (columns as keys)",
+        ]
+        json_orient_values = ["records", "split", "index", "columns"]
+        json_orient_idx = st.selectbox("JSON format", range(len(json_orient_labels)), format_func=lambda i: json_orient_labels[i], index=0)
+        json_orient = json_orient_values[json_orient_idx]
 
     col1, col2 = st.columns([1, 1], gap="large")
-
     with col1:
-        st.subheader("Workbook")
-        st.write(
-            {
-                "filename": uploaded.name,
-                "size_kb": round(len(xlsx_bytes) / 1024, 1),
-                "sheets": sheet_names,
-            }
-        )
-
+        st.subheader("Source")
+        if input_type == "xlsx":
+            st.write({"filename": uploaded.name, "size_kb": round(len(file_bytes) / 1024, 1), "sheets": sheet_names})
+        else:
+            st.write({"filename": uploaded.name, "size_kb": round(len(file_bytes) / 1024, 1), "rows": len(df), "columns": df.shape[1]})
     with col2:
         st.subheader("Preview")
-
-        if export_mode == "Single sheet → CSV":
-            sheet = st.selectbox("Select sheet", sheet_names)
-            try:
-                df = read_sheet_as_dataframe(
-                    xlsx_bytes=xlsx_bytes,
-                    sheet_name=sheet,
-                    header_row=int(header_row),
-                    formula_mode=formula_mode,
-                    drop_empty=drop_empty,
-                )
-                df = force_columns_to_text(df, force_text_cols)
-                st.dataframe(df.head(preview_rows), use_container_width=True)
-                st.caption(f"Rows: {len(df):,} | Columns: {df.shape[1]:,}")
-            except Exception as e:
-                st.error(f"Failed to read sheet '{sheet}'. Error: {e}")
-                st.stop()
-        else:
-            sheet = sheet_names[0]
-            try:
-                df = read_sheet_as_dataframe(
-                    xlsx_bytes=xlsx_bytes,
-                    sheet_name=sheet,
-                    header_row=int(header_row),
-                    formula_mode=formula_mode,
-                    drop_empty=drop_empty,
-                )
-                df = force_columns_to_text(df, force_text_cols)
-                st.dataframe(df.head(preview_rows), use_container_width=True)
-                st.caption(f"Previewing first sheet: {sheet} | Rows: {len(df):,} | Columns: {df.shape[1]:,}")
-            except Exception as e:
-                st.error(f"Failed to read sheet '{sheet}'. Error: {e}")
-                st.stop()
+        st.dataframe(df.head(preview_rows), use_container_width=True)
+        st.caption(f"Rows: {len(df):,} | Columns: {df.shape[1]:,}")
 
     st.divider()
     st.subheader("Download")
 
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    base_name = safe_filename(uploaded.name.rsplit(".", 1)[0])
+    enc = encoding_map[encoding]
 
-    if export_mode == "Single sheet → CSV":
-        out_name = f"{base_name}_{safe_filename(sheet)}_{timestamp}.csv"
-        try:
-            csv_bytes = to_csv_bytes(
-                df=df,
-                delimiter=delimiter,
-                encoding=encoding_map[encoding],
-                quoting=quoting,
-                escapechar_enabled=escapechar_enabled,
-                date_format=date_format,
-            )
-            st.download_button(
-                label=f"Download CSV ({sheet})",
-                data=csv_bytes,
-                file_name=out_name,
-                mime="text/csv",
-            )
-        except Exception as e:
-            st.error(f"Failed to create CSV. Error: {e}")
+    if single_sheet_only:
+        # One file out
+        if output_type == "csv":
+            out_name = f"{base_name}_{safe_filename(sheet) if input_type == 'xlsx' else 'export'}_{timestamp}.csv"
+            try:
+                out_bytes = to_csv_bytes(df, delimiter, enc, quoting, escapechar_enabled, date_format)
+                st.download_button("Download CSV", data=out_bytes, file_name=out_name, mime="text/csv")
+            except Exception as e:
+                st.error(f"Failed to create CSV. Error: {e}")
+        elif output_type == "xlsx":
+            out_name = f"{base_name}_export_{timestamp}.xlsx"
+            try:
+                out_bytes = to_xlsx_bytes(df, date_format)
+                st.download_button("Download XLSX", data=out_bytes, file_name=out_name, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            except Exception as e:
+                st.error(f"Failed to create XLSX. Error: {e}")
+        else:  # json
+            out_name = f"{base_name}_export_{timestamp}.json"
+            try:
+                out_bytes = to_json_bytes(df, orient=json_orient, date_format=date_format)
+                st.download_button("Download JSON", data=out_bytes, file_name=out_name, mime="application/json")
+            except Exception as e:
+                st.error(f"Failed to create JSON. Error: {e}")
     else:
-        zip_name = f"{base_name}_{timestamp}_csvs.zip"
+        # ZIP of multiple sheets (XLSX input only)
+        zip_name = f"{base_name}_{timestamp}.zip"
+        ext = "csv" if output_type == "csv" else "json"
         try:
             zip_buf = io.BytesIO()
             with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as z:
-                for s in sheet_names:
-                    df_s = read_sheet_as_dataframe(
-                        xlsx_bytes=xlsx_bytes,
-                        sheet_name=s,
-                        header_row=int(header_row),
-                        formula_mode=formula_mode,
-                        drop_empty=drop_empty,
-                    )
-                    df_s = force_columns_to_text(df_s, force_text_cols)
-                    csv_s = to_csv_bytes(
-                        df=df_s,
-                        delimiter=delimiter,
-                        encoding=encoding_map[encoding],
-                        quoting=quoting,
-                        escapechar_enabled=escapechar_enabled,
-                        date_format=date_format,
-                    )
-                    csv_filename = f"{safe_filename(s)}.csv"
-                    z.writestr(csv_filename, csv_s)
-
+                for s in sheets_to_export:
+                    df_s = get_df_xlsx(s) if input_type == "xlsx" else df
+                    if output_type == "csv":
+                        out_s = to_csv_bytes(df_s, delimiter, enc, quoting, escapechar_enabled, date_format)
+                    else:
+                        out_s = to_json_bytes(df_s, orient=json_orient, date_format=date_format)
+                    z.writestr(f"{safe_filename(s)}.{ext}", out_s)
             zip_buf.seek(0)
-            st.download_button(
-                label="Download ZIP (all sheets as CSV)",
-                data=zip_buf.getvalue(),
-                file_name=zip_name,
-                mime="application/zip",
-            )
+            label = f"Download ZIP (all sheets as .{ext})"
+            st.download_button(label, data=zip_buf.getvalue(), file_name=zip_name, mime="application/zip")
         except Exception as e:
             st.error(f"Failed to create ZIP. Error: {e}")
 
