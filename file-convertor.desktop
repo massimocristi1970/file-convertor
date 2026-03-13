@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=File Convertor
+Comment=Launch File Convertor (Streamlit app)
+Exec=/home/massimocristi/Dev/file-convertor/run_app.sh
+Path=/home/massimocristi/Dev/file-convertor
+Icon=utilities-file-archiver
+Terminal=true
+Categories=Utility;Development;
