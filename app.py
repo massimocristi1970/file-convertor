@@ -1,6 +1,5 @@
 import io
 import json
-import re
 import zipfile
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -8,996 +7,528 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import streamlit as st
 
-try:
-    import openpyxl
-except ImportError:
-    openpyxl = None
+from data_io import (
+    SUPPORTED_INPUT_TYPES,
+    SUPPORTED_OUTPUT_TYPES,
+    TEXT_LIKE_TYPES,
+    detect_file_type,
+    delimiter_from_choice,
+    force_columns_to_text,
+    get_mime_type,
+    list_xlsx_sheets,
+    parse_csv_columns,
+    quoting_from_choice,
+    read_uploaded_file_as_df,
+    safe_filename,
+    to_export_bytes,
+)
+from merge_utils import merge_dataframes, parse_merge_key_columns
+from template_utils import apply_template_to_defaults, build_template_payload
+from transforms import TRANSFORM_FUNCS, apply_transform
 
 
-# Short, direct name (not too long)
 APP_TITLE = "Data Mapper"
 
 
-# ---------- Helpers ----------
-def safe_filename(name: str, max_len: int = 80) -> str:
-    name = name.strip()
-    name = re.sub(r"[^\w\-. ]+", "_", name)
-    name = re.sub(r"\s+", " ", name)
-    name = name.strip(" ._")
-    if not name:
-        name = "sheet"
-    return name[:max_len]
-
-
-def parse_force_text_columns(raw: str) -> List[str]:
-    """
-    User can enter: "colA, colB, AccountNumber"
-    We'll treat them as column names after header row is read.
-    """
-    if not raw:
-        return []
-    parts = [p.strip() for p in raw.split(",")]
-    return [p for p in parts if p]
-
-
-def delimiter_from_choice(choice: str, custom: str) -> str:
-    mapping = {
-        "Comma (,)": ",",
-        "Semicolon (;)": ";",
-        "Tab (\\t)": "\t",
-        "Pipe (|)": "|",
-        "Custom": custom if custom else ",",
-    }
-    return mapping.get(choice, ",")
-
-
-def quoting_from_choice(choice: str) -> int:
-    import csv
-
-    mapping = {
-        "Minimal (default)": csv.QUOTE_MINIMAL,
-        "All fields": csv.QUOTE_ALL,
-        "Non-numeric": csv.QUOTE_NONNUMERIC,
-        "None": csv.QUOTE_NONE,
-    }
-    return mapping.get(choice, csv.QUOTE_MINIMAL)
-
-
-def load_workbook_bytes(xlsx_bytes: bytes, data_only: bool) -> "openpyxl.Workbook":
-    if openpyxl is None:
-        raise RuntimeError("openpyxl is not installed. Install it with: pip install openpyxl")
-    bio = io.BytesIO(xlsx_bytes)
-    # read_only=False to allow pandas to read properly; data_only controls formulas vs cached values
-    return openpyxl.load_workbook(bio, data_only=data_only, read_only=False)
-
-
-def read_sheet_as_dataframe(
-    xlsx_bytes: bytes,
-    sheet_name: str,
-    header_row: int,
+def parse_file_with_ui(
+    file_obj: Any,
+    header_row_default: int,
     formula_mode: str,
     drop_empty: bool,
-) -> pd.DataFrame:
-    """
-    formula_mode:
-      - "Cached values (recommended)" -> data_only=True
-      - "Formula strings"             -> data_only=False
-    """
-    df = pd.read_excel(
-        io.BytesIO(xlsx_bytes),
+    force_text_cols: List[str],
+    key_prefix: str,
+) -> Dict[str, Any]:
+    file_type = detect_file_type(file_obj.name)
+    sheet_name: Optional[str] = None
+    header_row = int(header_row_default)
+    text_parse_mode = "Delimited"
+    text_delimiter: Optional[str] = None
+
+    if file_type == "xlsx":
+        sheets = list_xlsx_sheets(file_obj.getvalue(), data_only=(formula_mode == "Cached values (recommended)"))
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            sheet_name = st.selectbox(f"Sheet ({file_obj.name})", sheets, key=f"{key_prefix}_sheet")
+        with col2:
+            header_row = st.number_input(
+                f"Header row ({file_obj.name})",
+                min_value=1,
+                max_value=100,
+                value=int(header_row_default),
+                step=1,
+                key=f"{key_prefix}_header",
+            )
+    elif file_type in TEXT_LIKE_TYPES:
+        col1, col2, col3 = st.columns([2, 2, 1])
+        with col1:
+            text_parse_mode = st.selectbox(
+                f"Text parse mode ({file_obj.name})",
+                options=["Delimited", "Fixed width"],
+                index=0,
+                key=f"{key_prefix}_text_mode",
+            )
+        with col2:
+            delimiter_choice = st.selectbox(
+                f"Delimiter ({file_obj.name})",
+                options=["Auto-detect", "Comma (,)", "Semicolon (;)", "Tab (\\t)", "Pipe (|)", "Space", "Custom"],
+                index=0 if file_type == "txt" else (3 if file_type == "tsv" else 1),
+                key=f"{key_prefix}_delimiter_choice",
+            )
+            custom_delimiter = ""
+            if delimiter_choice == "Custom":
+                custom_delimiter = st.text_input("Custom delimiter", value="|", key=f"{key_prefix}_custom_delim")
+            if delimiter_choice != "Auto-detect":
+                text_delimiter = delimiter_from_choice(delimiter_choice, custom_delimiter)
+        with col3:
+            header_row = st.number_input(
+                f"Header row ({file_obj.name})",
+                min_value=1,
+                max_value=100,
+                value=int(header_row_default),
+                step=1,
+                key=f"{key_prefix}_text_header",
+            )
+
+    df = read_uploaded_file_as_df(
+        file_obj=file_obj,
+        file_type=file_type,
         sheet_name=sheet_name,
-        header=header_row - 1,  # pandas is 0-indexed
-        engine="openpyxl",
+        header_row=header_row,
+        formula_mode=formula_mode,
+        drop_empty=drop_empty,
+        text_parse_mode=text_parse_mode,
+        text_delimiter=text_delimiter,
     )
-
-    if drop_empty:
-        df = df.dropna(how="all").dropna(axis=1, how="all")
-
-    # To truly export formula strings we need openpyxl cell inspection.
-    if formula_mode == "Formula strings":
-        wb = load_workbook_bytes(xlsx_bytes, data_only=False)
-        ws = wb[sheet_name]
-
-        values = list(ws.values)
-        if not values:
-            return pd.DataFrame()
-
-        hdr_idx = header_row - 1
-        if hdr_idx >= len(values):
-            return pd.DataFrame()
-
-        headers = list(values[hdr_idx])
-        data_rows = values[hdr_idx + 1 :]
-
-        # Make unique header names
-        clean_headers: List[str] = []
-        seen: Dict[str, int] = {}
-        for h in headers:
-            h_str = str(h).strip() if h is not None else ""
-            if not h_str:
-                h_str = "Unnamed"
-            if h_str in seen:
-                seen[h_str] += 1
-                h2 = f"{h_str}.{seen[h_str]}"
-            else:
-                seen[h_str] = 0
-                h2 = h_str
-            clean_headers.append(h2)
-
-        df2 = pd.DataFrame(data_rows, columns=clean_headers)
-        if drop_empty:
-            df2 = df2.dropna(how="all").dropna(axis=1, how="all")
-        return df2
-
-    return df
+    df = force_columns_to_text(df, force_text_cols)
+    return {
+        "file_type": file_type,
+        "sheet_name": sheet_name,
+        "header_row": header_row,
+        "text_parse_mode": text_parse_mode,
+        "text_delimiter": text_delimiter,
+        "df": df,
+    }
 
 
-def force_columns_to_text(df: pd.DataFrame, col_names: List[str]) -> pd.DataFrame:
-    """
-    Forces specific columns (if present) to string and preserves leading zeros.
-    """
-    if not col_names:
-        return df
-    df = df.copy()
-    for col in col_names:
-        if col in df.columns:
-            df[col] = df[col].map(lambda x: "" if pd.isna(x) else str(x))
-    return df
+def render_json_options(prefix: str) -> str:
+    labels = [
+        "Records (list of objects)",
+        "Split (columns + index + data)",
+        "Index (rows as keys)",
+        "Columns (columns as keys)",
+    ]
+    values = ["records", "split", "index", "columns"]
+    idx = st.selectbox(
+        f"JSON format ({prefix})",
+        range(len(labels)),
+        format_func=lambda i: labels[i],
+        index=0,
+        key=f"{prefix}_json_orient",
+    )
+    return values[idx]
 
 
-def normalise_merge_key(series: pd.Series) -> pd.Series:
-    """
-    Normalise merge keys to safe strings.
-    - trims whitespace
-    - removes trailing ".0" (common when IDs were numeric in Excel)
-    - preserves leading zeros (because we keep as strings)
-    """
-    s = series.map(lambda v: "" if pd.isna(v) else str(v).strip())
-    s = s.str.replace(r"\.0$", "", regex=True)
-    return s
+def render_xml_options(prefix: str) -> Dict[str, str]:
+    col1, col2 = st.columns(2)
+    with col1:
+        root = st.text_input(f"XML root element ({prefix})", value="rows", key=f"{prefix}_xml_root")
+    with col2:
+        row = st.text_input(f"XML row element ({prefix})", value="row", key=f"{prefix}_xml_row")
+    return {"root": root.strip() or "rows", "row": row.strip() or "row"}
 
 
-def normalise_dates(df: pd.DataFrame, date_format: str) -> pd.DataFrame:
-    """
-    Format datetime-like columns to consistent string format for CSV output.
-    """
-    df = df.copy()
-    for col in df.columns:
-        if pd.api.types.is_datetime64_any_dtype(df[col]):
-            df[col] = df[col].dt.strftime(date_format)
-    return df
-
-
-def to_csv_bytes(
+def render_download_button(
     df: pd.DataFrame,
+    base_name: str,
+    output_type: str,
     delimiter: str,
     encoding: str,
     quoting: int,
     escapechar_enabled: bool,
     date_format: str,
-) -> bytes:
-    import csv  # noqa: F401
-
-    df_out = normalise_dates(df, date_format=date_format)
-
-    buf = io.StringIO()
-    df_out.to_csv(
-        buf,
-        index=False,
-        sep=delimiter,
-        encoding=None,  # we encode after
+    json_orient: str,
+    xml_root: str,
+    xml_row: str,
+    label_prefix: str,
+) -> None:
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    out_name = f"{base_name}_{timestamp}.{output_type}"
+    out_bytes = to_export_bytes(
+        df=df,
+        output_type=output_type,
+        delimiter=delimiter,
+        encoding=encoding,
         quoting=quoting,
-        escapechar="\\" if escapechar_enabled else None,
-        quotechar='"',
-        lineterminator="\n",
+        escapechar_enabled=escapechar_enabled,
+        date_format=date_format,
+        json_orient=json_orient,
+        xml_root=xml_root,
+        xml_row=xml_row,
     )
-    return buf.getvalue().encode(encoding, errors="replace")
-
-
-def to_xlsx_bytes(df: pd.DataFrame, date_format: str) -> bytes:
-    """Write a single DataFrame to .xlsx bytes (one sheet, default name)."""
-    buf = io.BytesIO()
-    df_out = normalise_dates(df, date_format=date_format)
-    df_out.to_excel(buf, index=False, sheet_name="Sheet1", engine="openpyxl")
-    buf.seek(0)
-    return buf.getvalue()
-
-
-def to_json_bytes(df: pd.DataFrame, orient: str = "records", date_format: str = "%Y-%m-%d") -> bytes:
-    """Write DataFrame to JSON bytes. orient: 'records' (list of objects), 'split', 'index', 'columns'."""
-    df_out = normalise_dates(df, date_format=date_format)
-    # pandas to_json returns a string; default date_format is ISO
-    js = df_out.to_json(orient=orient, date_format="iso", force_ascii=False, indent=None)
-    return js.encode("utf-8", errors="replace")
-
-
-def read_csv_bytes_safely(file_bytes: bytes) -> pd.DataFrame:
-    """
-    Best-effort CSV read with encoding fallbacks.
-    """
-    last_err: Optional[Exception] = None
-    for enc in ("utf-8-sig", "utf-8", "cp1252"):
-        try:
-            return pd.read_csv(io.BytesIO(file_bytes), encoding=enc)
-        except Exception as e:
-            last_err = e
-    raise RuntimeError(f"Could not read CSV with common encodings. Last error: {last_err}")
-
-
-def read_uploaded_file_as_df(
-    file_obj: Any,
-    sheet_name: Optional[str],
-    header_row: int,
-    formula_mode: str,
-    drop_empty: bool,
-) -> pd.DataFrame:
-    """
-    Supports .xlsx and .csv
-    """
-    name = (getattr(file_obj, "name", "") or "").lower()
-
-    if name.endswith(".csv"):
-        df = read_csv_bytes_safely(file_obj.getvalue())
-        if drop_empty:
-            df = df.dropna(how="all").dropna(axis=1, how="all")
-        return df
-
-    if not name.endswith(".xlsx"):
-        raise RuntimeError("Unsupported file type. Upload .xlsx or .csv")
-
-    xlsx_bytes = file_obj.getvalue()
-    if sheet_name is None:
-        wb_tmp = load_workbook_bytes(xlsx_bytes, data_only=(formula_mode == "Cached values (recommended)"))
-        sheet_name = wb_tmp.sheetnames[0] if wb_tmp.sheetnames else None
-        if sheet_name is None:
-            return pd.DataFrame()
-
-    return read_sheet_as_dataframe(
-        xlsx_bytes=xlsx_bytes,
-        sheet_name=sheet_name,
-        header_row=header_row,
-        formula_mode=formula_mode,
-        drop_empty=drop_empty,
+    st.download_button(
+        label=f"{label_prefix} {output_type.upper()}",
+        data=out_bytes,
+        file_name=out_name,
+        mime=get_mime_type(output_type),
     )
 
 
-# ---------- Transform engine (future-proof, parameterised) ----------
-POSTCODE_RE = re.compile(r"\b([A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2})\b", flags=re.IGNORECASE)
-
-
-def _as_str(x: Any) -> str:
-    return "" if pd.isna(x) else str(x)
-
-
-def tf_none(x: str, p: Dict[str, Any]) -> str:
-    return x
-
-
-def tf_text_force(x: str, p: Dict[str, Any]) -> str:
-    # Useful to prevent Excel/scientific notation display issues; keeps value as text.
-    return x
-
-
-def tf_uk_postcode(x: str, p: Dict[str, Any]) -> str:
-    m = POSTCODE_RE.search(x.upper())
-    return m.group(1).strip() if m else ""
-
-
-def tf_first_line(x: str, p: Dict[str, Any]) -> str:
-    s = x.strip()
-    if not s:
-        return ""
-    parts = [t.strip() for t in s.split(",")]
-    for t in parts:
-        if t:
-            return t
-    return s
-
-
-def tf_uk_mobile_add44(x: str, p: Dict[str, Any]) -> str:
-    # Remove whitespace
-    s = re.sub(r"\s+", "", x.strip())
-
-    if not s:
-        return ""
-
-    # Remove trailing .0 caused by float conversion
-    if s.endswith(".0"):
-        s = s[:-2]
-
-    # Remove all non-digits
-    digits = re.sub(r"\D", "", s)
-
-    # Already starts with 44
-    if digits.startswith("44"):
-        return digits
-
-    # Starts with 0 → convert to 44
-    if digits.startswith("0"):
-        return "44" + digits[1:]
-
-    # Otherwise assume missing country code
-    return "44" + digits
-
-
-def tf_digits_last_n(x: str, p: Dict[str, Any]) -> str:
-    n = int(p.get("n", 4))
-    digits = re.findall(r"\d", x)
-    return "".join(digits[-n:]) if len(digits) >= n else ""
-
-
-def tf_extract_regex(x: str, p: Dict[str, Any]) -> str:
-    pattern = str(p.get("pattern", "") or "")
-    if not pattern:
-        return ""
-    flags = re.IGNORECASE if bool(p.get("ignore_case", True)) else 0
-    m = re.search(pattern, x, flags=flags)
-    if not m:
-        return ""
-    group = int(p.get("group", 1))
-    try:
-        return (m.group(group) or "").strip()
-    except Exception:
-        return ""
-
-
-def tf_split_take(x: str, p: Dict[str, Any]) -> str:
-    delim = str(p.get("delim", ","))
-    idx = int(p.get("index", 0))
-    parts = [t.strip() for t in x.split(delim)]
-    if not parts:
-        return ""
-    if idx < 0:
-        idx = len(parts) + idx
-    return parts[idx] if 0 <= idx < len(parts) else ""
-
-
-def tf_prefix_if_missing(x: str, p: Dict[str, Any]) -> str:
-    prefix = str(p.get("prefix", "") or "")
-    if not prefix:
-        return x
-    return x if x.startswith(prefix) else prefix + x
-
-
-def tf_suffix(x: str, p: Dict[str, Any]) -> str:
-    suffix = str(p.get("suffix", "") or "")
-    return x + suffix if suffix else x
-
-
-def tf_regex_replace(x: str, p: Dict[str, Any]) -> str:
-    pattern = str(p.get("pattern", "") or "")
-    repl = str(p.get("repl", "") or "")
-    if not pattern:
-        return x
-    flags = re.IGNORECASE if bool(p.get("ignore_case", True)) else 0
-    return re.sub(pattern, repl, x, flags=flags)
-
-
-TRANSFORM_FUNCS = {
-    "None": tf_none,
-    "Text (force)": tf_text_force,
-    # Presets (your examples)
-    "UK Postcode (extract)": tf_uk_postcode,
-    "Address first line (before comma)": tf_first_line,
-    "UK mobile → 44": tf_uk_mobile_add44,
-    "Digits: keep last N": tf_digits_last_n,
-    # Generic / future-proof
-    "Extract by regex": tf_extract_regex,
-    "Split + take part": tf_split_take,
-    "Prefix if missing": tf_prefix_if_missing,
-    "Suffix": tf_suffix,
-    "Regex replace": tf_regex_replace,
-}
-
-
-def apply_transform(series: pd.Series, tf_name: str, params: Dict[str, Any]) -> pd.Series:
-    fn = TRANSFORM_FUNCS.get(tf_name, tf_none)
-    return series.map(lambda v: fn(_as_str(v), params))
-
-
-# ---------- Template helpers ----------
-def apply_template_to_defaults(template: Optional[dict]) -> dict:
-    t = template or {}
-    return {
-        "version": int(t.get("version", 1)),
-        "join_type": t.get("join_type", "Left (recommended)"),
-        "base_role": t.get("base_role", ""),
-        "merge_keys_by_role": t.get("merge_keys_by_role", {}),
-        "output_spec": t.get("output_spec", []),
-    }
-
-
-def build_template_payload(
-    join_type: str,
-    base_role: str,
-    merge_keys_by_role: Dict[str, str],
-    out_rows: List[Dict[str, Any]],
-) -> dict:
-    return {
-        "version": 1,
-        "join_type": join_type,
-        "base_role": base_role,
-        "merge_keys_by_role": merge_keys_by_role,
-        "output_spec": out_rows,
-    }
-
-
-# ---------- UI ----------
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 st.title(APP_TITLE)
-
 st.markdown(
     """
-Upload files and either:
+Upload tabular files and either:
 
-- **Convert** a single file (XLSX or CSV) to CSV, XLSX, or JSON (with options per type), or
-- **Merge + Map + Transform** across multiple uploads and export a clean output file.
+- **Convert** a single file between CSV, TSV, TXT, XLSX, JSON, XML, and Parquet
+- **Merge + Map + Transform** multiple uploads with diagnostics, composite keys, duplicate strategies, and audit exports
 """
 )
 
 with st.sidebar:
     st.header("Mode")
-    app_mode = st.radio(
-        "Choose workflow",
-        options=["Simple Convert", "Merge + Map + Transform"],
-        index=0,
-    )
+    app_mode = st.radio("Choose workflow", options=["Simple Convert", "Merge + Map + Transform"], index=0)
 
     st.divider()
-    st.header("Export options")
-
-    header_row = st.number_input("Header row (1 = first row)", min_value=1, max_value=100, value=1, step=1)
-
+    st.header("General options")
+    header_row = st.number_input("Default header row", min_value=1, max_value=100, value=1, step=1)
     formula_mode = st.selectbox(
         "Formulas",
         options=["Cached values (recommended)", "Formula strings"],
         index=0,
-        help="Cached values are what Excel last calculated and saved. Formula strings exports '=SUM(...)' etc.",
     )
-
     drop_empty = st.checkbox("Drop completely empty rows/columns", value=True)
 
     st.divider()
-    st.subheader("CSV formatting")
-
-    delim_choice = st.selectbox("Delimiter", ["Comma (,)", "Semicolon (;)", "Tab (\\t)", "Pipe (|)", "Custom"], index=0)
-    custom_delim = st.text_input("Custom delimiter", value=",") if delim_choice == "Custom" else ""
+    st.subheader("Delimited export formatting")
+    delim_choice = st.selectbox("Default delimiter", ["Comma (,)", "Semicolon (;)", "Tab (\\t)", "Pipe (|)", "Space", "Custom"], index=0)
+    custom_delim = st.text_input("Custom default delimiter", value=",") if delim_choice == "Custom" else ""
     delimiter = delimiter_from_choice(delim_choice, custom_delim)
-
-    encoding = st.selectbox("Encoding", ["utf-8", "utf-8-sig (Excel-friendly)", "cp1252"], index=1)
+    encoding_label = st.selectbox("Encoding", ["utf-8", "utf-8-sig (Excel-friendly)", "cp1252"], index=1)
     encoding_map = {"utf-8": "utf-8", "utf-8-sig (Excel-friendly)": "utf-8-sig", "cp1252": "cp1252"}
-
     quoting_choice = st.selectbox("Quoting", ["Minimal (default)", "All fields", "Non-numeric", "None"], index=0)
     quoting = quoting_from_choice(quoting_choice)
-
-    escapechar_enabled = st.checkbox(
-        "Enable escape character (\\) (useful if quoting=None)",
-        value=(quoting_choice == "None"),
-    )
-
-    date_format = st.text_input("Date format", value="%Y-%m-%d", help="Python strftime format")
+    escapechar_enabled = st.checkbox("Enable escape character (\\)", value=(quoting_choice == "None"))
+    date_format = st.text_input("Date format", value="%Y-%m-%d")
 
     st.divider()
     st.subheader("Data fidelity")
-
     force_text_raw = st.text_area(
-        "Force these columns to TEXT (preserve IDs/leading zeros)\nComma-separated column names:",
+        "Force these columns to TEXT",
         value="",
         placeholder="e.g. AccountNumber, SortCode, Postcode, Mobile",
     )
-    force_text_cols = parse_force_text_columns(force_text_raw)
-
+    force_text_cols = parse_csv_columns(force_text_raw)
     preview_rows = st.slider("Preview rows", min_value=5, max_value=200, value=25, step=5)
 
     st.divider()
     st.subheader("Mapping template (optional)")
     template_file = st.file_uploader("Load template (.json)", type=["json"], key="template_json")
-    loaded_template = None
-    tmpl_defaults = apply_template_to_defaults(None)
+    template_defaults = apply_template_to_defaults(None)
     if template_file:
         try:
-            loaded_template = json.loads(template_file.getvalue().decode("utf-8"))
-            tmpl_defaults = apply_template_to_defaults(loaded_template)
+            template_defaults = apply_template_to_defaults(json.loads(template_file.getvalue().decode("utf-8")))
             st.success("Template loaded.")
-        except Exception as e:
-            st.error(f"Failed to load template: {e}")
+        except Exception as exc:
+            st.error(f"Failed to load template: {exc}")
 
-
-# ---------------------------
-# Mode 1: Simple Convert (multiple conversion types and variations)
-# ---------------------------
-# Conversion types: (input_type, output_type) -> label
-SIMPLE_CONVERSIONS = [
-    ("XLSX → CSV", "xlsx", "csv"),
-    ("XLSX → JSON", "xlsx", "json"),
-    ("CSV → CSV", "csv", "csv"),
-    ("CSV → XLSX", "csv", "xlsx"),
-    ("CSV → JSON", "csv", "json"),
-]
 
 if app_mode == "Simple Convert":
-    conv_choice = st.selectbox(
-        "Conversion type",
-        options=[c[0] for c in SIMPLE_CONVERSIONS],
-        index=0,
-        help="Choose input and output format.",
+    uploaded = st.file_uploader(
+        "Upload a file",
+        type=SUPPORTED_INPUT_TYPES,
+        help="Supports .xlsx, .csv, .tsv, .txt, .json, .xml, and .parquet",
     )
-    conv = next(c for c in SIMPLE_CONVERSIONS if c[0] == conv_choice)
-    _label, input_type, output_type = conv
-
-    # File upload: accept type(s) for this conversion
-    if input_type == "xlsx":
-        uploaded = st.file_uploader("Upload .xlsx", type=["xlsx"])
-    else:
-        uploaded = st.file_uploader("Upload .csv", type=["csv"])
-
     if not uploaded:
-        st.info(f"Upload a .{input_type} file to begin.")
+        st.info("Upload a file to begin.")
         st.stop()
 
+    try:
+        parsed = parse_file_with_ui(
+            uploaded,
+            header_row_default=int(header_row),
+            formula_mode=formula_mode,
+            drop_empty=drop_empty,
+            force_text_cols=force_text_cols,
+            key_prefix="simple",
+        )
+    except Exception as exc:
+        st.error(f"Failed to read '{uploaded.name}'. Error: {exc}")
+        st.stop()
+
+    input_type = parsed["file_type"]
     file_bytes = uploaded.getvalue()
     base_name = safe_filename(uploaded.name.rsplit(".", 1)[0])
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    output_type = st.selectbox(
+        "Output format",
+        options=SUPPORTED_OUTPUT_TYPES,
+        index=SUPPORTED_OUTPUT_TYPES.index("xml") if input_type == "txt" else 0,
+    )
+    json_orient = render_json_options("simple") if output_type == "json" else "records"
+    xml_options = render_xml_options("simple") if output_type == "xml" else {"root": "rows", "row": "row"}
 
-    # ----- XLSX input: optional "all sheets" variation
     if input_type == "xlsx":
-        try:
-            wb_tmp = load_workbook_bytes(file_bytes, data_only=(formula_mode == "Cached values (recommended)"))
-            sheet_names = wb_tmp.sheetnames
-        except Exception as e:
-            st.error(f"Could not read workbook. Error: {e}")
-            st.stop()
-        if not sheet_names:
-            st.error("No worksheets found in the uploaded file.")
+        sheets = list_xlsx_sheets(file_bytes, data_only=(formula_mode == "Cached values (recommended)"))
+        export_mode = st.radio("Export", options=["Single sheet", "All sheets → ZIP"], horizontal=True)
+        if export_mode == "All sheets → ZIP":
+            try:
+                archive = io.BytesIO()
+                with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zip_handle:
+                    for sheet_name in sheets:
+                        df_sheet = force_columns_to_text(
+                            read_uploaded_file_as_df(
+                                file_obj=uploaded,
+                                file_type="xlsx",
+                                sheet_name=sheet_name,
+                                header_row=int(parsed["header_row"]),
+                                formula_mode=formula_mode,
+                                drop_empty=drop_empty,
+                            ),
+                            force_text_cols,
+                        )
+                        zip_handle.writestr(
+                            f"{safe_filename(sheet_name)}.{output_type}",
+                            to_export_bytes(
+                                df=df_sheet,
+                                output_type=output_type,
+                                delimiter=delimiter,
+                                encoding=encoding_map[encoding_label],
+                                quoting=quoting,
+                                escapechar_enabled=escapechar_enabled,
+                                date_format=date_format,
+                                json_orient=json_orient,
+                                xml_root=xml_options["root"],
+                                xml_row=xml_options["row"],
+                            ),
+                        )
+                archive.seek(0)
+                st.download_button(
+                    "Download ZIP",
+                    data=archive.getvalue(),
+                    file_name=f"{base_name}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.zip",
+                    mime="application/zip",
+                )
+            except Exception as exc:
+                st.error(f"Failed to create ZIP export. Error: {exc}")
+            st.subheader("Preview")
+            st.dataframe(parsed["df"].head(preview_rows), use_container_width=True)
             st.stop()
 
-        export_mode = st.radio(
-            "Export",
-            options=["Single sheet", "All sheets → ZIP"],
-            index=0,
-            horizontal=True,
-            help="Single sheet: one output file. All sheets: one ZIP containing one file per sheet.",
+    st.subheader("Preview")
+    st.caption(f"Detected input type: `{input_type}`")
+    st.dataframe(parsed["df"].head(preview_rows), use_container_width=True)
+    st.caption(f"Rows: {len(parsed['df']):,} | Columns: {parsed['df'].shape[1]:,}")
+
+    try:
+        render_download_button(
+            df=parsed["df"],
+            base_name=base_name,
+            output_type=output_type,
+            delimiter=delimiter if output_type != "tsv" else "\t",
+            encoding=encoding_map[encoding_label],
+            quoting=quoting,
+            escapechar_enabled=escapechar_enabled,
+            date_format=date_format,
+            json_orient=json_orient,
+            xml_root=xml_options["root"],
+            xml_row=xml_options["row"],
+            label_prefix="Download",
         )
-        single_sheet_only = export_mode == "Single sheet"
-        sheet = st.selectbox("Select sheet", sheet_names) if single_sheet_only else sheet_names[0]
-
-        def get_df_xlsx(sheet_name: str) -> pd.DataFrame:
-            return force_columns_to_text(
-                read_sheet_as_dataframe(
-                    file_bytes, sheet_name, int(header_row), formula_mode, drop_empty
-                ),
-                force_text_cols,
-            )
-
-        df = get_df_xlsx(sheet)
-        sheets_to_export = [sheet] if single_sheet_only else sheet_names
-    else:
-        # CSV input: single file
-        try:
-            df = read_csv_bytes_safely(file_bytes)
-            if drop_empty:
-                df = df.dropna(how="all").dropna(axis=1, how="all")
-            df = force_columns_to_text(df, force_text_cols)
-        except Exception as e:
-            st.error(f"Could not read CSV. Error: {e}")
-            st.stop()
-        single_sheet_only = True
-        sheets_to_export = ["data"]
-        sheet_names = ["data"]
-
-    # JSON-specific option (only when output is JSON)
-    json_orient = "records"
-    if output_type == "json":
-        json_orient_labels = [
-            "Records (list of objects)",
-            "Split (columns + index + data)",
-            "Index (rows as keys)",
-            "Columns (columns as keys)",
-        ]
-        json_orient_values = ["records", "split", "index", "columns"]
-        json_orient_idx = st.selectbox("JSON format", range(len(json_orient_labels)), format_func=lambda i: json_orient_labels[i], index=0)
-        json_orient = json_orient_values[json_orient_idx]
-
-    col1, col2 = st.columns([1, 1], gap="large")
-    with col1:
-        st.subheader("Source")
-        if input_type == "xlsx":
-            st.write({"filename": uploaded.name, "size_kb": round(len(file_bytes) / 1024, 1), "sheets": sheet_names})
-        else:
-            st.write({"filename": uploaded.name, "size_kb": round(len(file_bytes) / 1024, 1), "rows": len(df), "columns": df.shape[1]})
-    with col2:
-        st.subheader("Preview")
-        st.dataframe(df.head(preview_rows), use_container_width=True)
-        st.caption(f"Rows: {len(df):,} | Columns: {df.shape[1]:,}")
-
-    st.divider()
-    st.subheader("Download")
-
-    enc = encoding_map[encoding]
-
-    if single_sheet_only:
-        # One file out
-        if output_type == "csv":
-            out_name = f"{base_name}_{safe_filename(sheet) if input_type == 'xlsx' else 'export'}_{timestamp}.csv"
-            try:
-                out_bytes = to_csv_bytes(df, delimiter, enc, quoting, escapechar_enabled, date_format)
-                st.download_button("Download CSV", data=out_bytes, file_name=out_name, mime="text/csv")
-            except Exception as e:
-                st.error(f"Failed to create CSV. Error: {e}")
-        elif output_type == "xlsx":
-            out_name = f"{base_name}_export_{timestamp}.xlsx"
-            try:
-                out_bytes = to_xlsx_bytes(df, date_format)
-                st.download_button("Download XLSX", data=out_bytes, file_name=out_name, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-            except Exception as e:
-                st.error(f"Failed to create XLSX. Error: {e}")
-        else:  # json
-            out_name = f"{base_name}_export_{timestamp}.json"
-            try:
-                out_bytes = to_json_bytes(df, orient=json_orient, date_format=date_format)
-                st.download_button("Download JSON", data=out_bytes, file_name=out_name, mime="application/json")
-            except Exception as e:
-                st.error(f"Failed to create JSON. Error: {e}")
-    else:
-        # ZIP of multiple sheets (XLSX input only)
-        zip_name = f"{base_name}_{timestamp}.zip"
-        ext = "csv" if output_type == "csv" else "json"
-        try:
-            zip_buf = io.BytesIO()
-            with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as z:
-                for s in sheets_to_export:
-                    df_s = get_df_xlsx(s) if input_type == "xlsx" else df
-                    if output_type == "csv":
-                        out_s = to_csv_bytes(df_s, delimiter, enc, quoting, escapechar_enabled, date_format)
-                    else:
-                        out_s = to_json_bytes(df_s, orient=json_orient, date_format=date_format)
-                    z.writestr(f"{safe_filename(s)}.{ext}", out_s)
-            zip_buf.seek(0)
-            label = f"Download ZIP (all sheets as .{ext})"
-            st.download_button(label, data=zip_buf.getvalue(), file_name=zip_name, mime="application/zip")
-        except Exception as e:
-            st.error(f"Failed to create ZIP. Error: {e}")
-
+    except Exception as exc:
+        st.error(f"Failed to create export. Error: {exc}")
     st.stop()
 
 
-# -----------------------------------
-# Mode 2: Merge + Map + Transform
-# -----------------------------------
-st.markdown(
-    """
-### 1) Upload multiple files
-Upload **.xlsx** and/or **.csv** files. You can set a **role** and **merge key** for each file.
-"""
-)
-
+st.markdown("### 1) Upload files")
 uploaded_files = st.file_uploader(
-    "Upload files (.xlsx or .csv)",
-    type=["xlsx", "csv"],
+    "Upload files",
+    type=SUPPORTED_INPUT_TYPES,
     accept_multiple_files=True,
+    help="Supports .xlsx, .csv, .tsv, .txt, .json, .xml, and .parquet",
 )
-
 if not uploaded_files:
     st.info("Upload one or more files to begin.")
     st.stop()
 
-dfs: List[pd.DataFrame] = []
-file_configs: List[Dict[str, Any]] = []
-
-for i, f in enumerate(uploaded_files):
-    st.markdown(f"#### File {i+1}: `{f.name}`")
-
-    default_role = f"File{i+1}"
+file_entries: List[Dict[str, Any]] = []
+for idx, uploaded in enumerate(uploaded_files):
+    st.markdown(f"#### File {idx + 1}: `{uploaded.name}`")
+    default_role = f"File{idx + 1}"
     role = st.text_input(
-        f"Role name ({f.name})",
+        f"Role name ({uploaded.name})",
         value=default_role,
-        key=f"role_{i}",
-        help="Give each upload a stable label (e.g. Applications, Bureau, Payments).",
+        key=f"role_{idx}",
+        help="Give each upload a stable label, for example Applications or Payments.",
     ).strip() or default_role
-
-    name_lower = f.name.lower()
-    sheet_name: Optional[str] = None
-
-    if name_lower.endswith(".xlsx"):
-        xlsx_bytes = f.getvalue()
-        try:
-            wb_tmp = load_workbook_bytes(xlsx_bytes, data_only=(formula_mode == "Cached values (recommended)"))
-            sheets = wb_tmp.sheetnames
-        except Exception as e:
-            st.error(f"Could not read workbook '{f.name}'. Error: {e}")
-            st.stop()
-
-        c1, c2 = st.columns([2, 1])
-        with c1:
-            sheet_name = st.selectbox(f"Sheet ({f.name})", sheets, key=f"sheet_{i}")
-        with c2:
-            hdr = st.number_input(f"Header row ({f.name})", 1, 100, int(header_row), 1, key=f"hdr_{i}")
-    else:
-        hdr = 1  # not used for CSV
-
-    default_key = str(tmpl_defaults.get("merge_keys_by_role", {}).get(role, "AppID"))
-    key_col = st.text_input(
-        f"Merge key column ({f.name})",
-        value=default_key,
-        key=f"key_{i}",
-        help="Typically AppID. This is used to merge all uploads into one dataset.",
-    ).strip() or default_key
-
     try:
-        df = read_uploaded_file_as_df(
-            file_obj=f,
-            sheet_name=sheet_name,
-            header_row=int(hdr),
+        parsed = parse_file_with_ui(
+            uploaded,
+            header_row_default=int(header_row),
             formula_mode=formula_mode,
             drop_empty=drop_empty,
+            force_text_cols=force_text_cols,
+            key_prefix=f"merge_{idx}",
         )
-    except Exception as e:
-        st.error(f"Failed to read '{f.name}'. Error: {e}")
+    except Exception as exc:
+        st.error(f"Failed to read '{uploaded.name}'. Error: {exc}")
         st.stop()
 
-    df = force_columns_to_text(df, force_text_cols)
+    default_keys = template_defaults.get("merge_keys_by_role", {}).get(role, ["AppID"])
+    key_cols_raw = st.text_input(
+        f"Merge key columns ({uploaded.name})",
+        value=", ".join(default_keys),
+        key=f"keys_{idx}",
+        help="Use one or more columns separated by commas to create a composite merge key.",
+    )
+    key_cols = parse_merge_key_columns(key_cols_raw)
+    duplicate_strategy = st.selectbox(
+        f"Duplicate key strategy ({uploaded.name})",
+        options=["Keep first", "Keep last", "Aggregate values", "Error"],
+        index=["Keep first", "Keep last", "Aggregate values", "Error"].index(
+            template_defaults.get("duplicate_strategy_by_role", {}).get(role, "Keep first")
+        ),
+        key=f"dupes_{idx}",
+    )
 
-    st.caption(f"Rows: {len(df):,} | Columns: {df.shape[1]:,}")
-    st.dataframe(df.head(min(preview_rows, 25)), use_container_width=True)
+    st.caption(f"Rows: {len(parsed['df']):,} | Columns: {parsed['df'].shape[1]:,}")
+    st.dataframe(parsed["df"].head(min(preview_rows, 25)), use_container_width=True)
 
-    dfs.append(df)
-    file_configs.append({"name": f.name, "role": role, "key_col": key_col, "columns": list(df.columns)})
+    file_entries.append(
+        {
+            "name": uploaded.name,
+            "role": role,
+            "df": parsed["df"],
+            "key_cols": key_cols,
+            "duplicate_strategy": duplicate_strategy,
+        }
+    )
 
-roles = [cfg["role"] for cfg in file_configs]
+roles = [entry["role"] for entry in file_entries]
 if len(set(roles)) != len(roles):
-    st.error("Role names must be unique. Please adjust roles so each file has a distinct role.")
+    st.error("Role names must be unique.")
+    st.stop()
+if any(not entry["key_cols"] for entry in file_entries):
+    st.error("Every file needs at least one merge key column.")
     st.stop()
 
 st.divider()
 st.subheader("2) Merge")
-
-base_role_default = tmpl_defaults.get("base_role", "")
+base_role_default = template_defaults.get("base_role", roles[0])
 if base_role_default not in roles:
     base_role_default = roles[0]
 
-base_role = st.selectbox("Base dataset role (others merge into this)", roles, index=roles.index(base_role_default))
-base_idx = roles.index(base_role)
-
-join_type_default = tmpl_defaults.get("join_type", "Left (recommended)")
+base_role = st.selectbox("Base dataset role", roles, index=roles.index(base_role_default))
 join_type = st.selectbox(
     "Join type",
-    ["Left (recommended)", "Inner"],
-    index=0 if join_type_default.startswith("Left") else 1,
+    options=["left", "inner", "outer"],
+    index=["left", "inner", "outer"].index(template_defaults.get("join_type", "left")),
 )
-how = "left" if join_type.startswith("Left") else "inner"
-
-st.subheader("Merge quality controls")
 exclude_unmatched = st.checkbox(
-    "Exclude records not matched across files (recommended)",
+    "Exclude records not matched across files",
     value=True,
-    help="Removes records that do not match the base file (prevents orphan rows). Shows a summary of excluded rows.",
+    help="When enabled, only rows matched in every merge step remain in the final output.",
 )
 
-merged = dfs[base_idx].copy()
-base_key = file_configs[base_idx]["key_col"]
-
-if base_key not in merged.columns:
-    st.error(f"Base merge key '{base_key}' not found in base file ({file_configs[base_idx]['name']}).")
+try:
+    merge_result = merge_dataframes(
+        file_entries=file_entries,
+        base_role=base_role,
+        join_type=join_type,
+        exclude_unmatched=exclude_unmatched,
+        delimiter=delimiter,
+        encoding=encoding_map[encoding_label],
+        quoting=quoting,
+        escapechar_enabled=escapechar_enabled,
+        date_format=date_format,
+    )
+except Exception as exc:
+    st.error(f"Merge failed. Error: {exc}")
     st.stop()
 
-# Normalise base key
-merged[base_key] = normalise_merge_key(merged[base_key])
-
-blank_base = (merged[base_key] == "").sum()
-if blank_base > 0:
-    st.warning(f"Base dataset has {blank_base:,} blank '{base_key}' keys. These rows will not match other files.")
-
-exclusion_notes = []  # capture messages for the UI
-
-for j in range(len(dfs)):
-    if j == base_idx:
-        continue
-
-    df_j = dfs[j].copy()
-    key_j = file_configs[j]["key_col"]
-    role_j = file_configs[j]["role"]
-    file_j = file_configs[j]["name"]
-
-    if key_j not in df_j.columns:
-        st.error(f"Merge key '{key_j}' not found in file: {file_j}")
-        st.stop()
-
-    # Normalise merge key on the right
-    df_j[key_j] = normalise_merge_key(df_j[key_j])
-
-    # Drop blank keys in the right-hand file (prevents keyless rows)
-    before = len(df_j)
-    df_j = df_j[df_j[key_j] != ""]
-    dropped_blank = before - len(df_j)
-    if dropped_blank > 0:
-        exclusion_notes.append(f"{file_j}: dropped {dropped_blank:,} rows with blank key '{key_j}'")
-
-    # De-duplicate right keys to avoid row multiplication
-    if df_j[key_j].duplicated().any():
-        dup_n = int(df_j[key_j].duplicated().sum())
-        exclusion_notes.append(f"{file_j}: {dup_n:,} duplicate keys in '{key_j}' (kept first occurrence)")
-        df_j = df_j.drop_duplicates(subset=[key_j], keep="first")
-
-    # Merge with indicator to detect unmatched
-    ind_col = f"__merge__{safe_filename(role_j, 24)}"
-    merged = merged.merge(
-        df_j,
-        left_on=base_key,
-        right_on=key_j,
-        how=how,
-        suffixes=("", f"__{safe_filename(role_j, 24)}"),
-        indicator=ind_col,
+merged = merge_result["merged"]
+st.subheader("Diagnostics")
+st.dataframe(merge_result["diagnostics"], use_container_width=True)
+if merge_result["notes"]:
+    st.info("Merge notes:\n\n- " + "\n- ".join(merge_result["notes"]))
+if merge_result["has_unmatched_reports"]:
+    st.download_button(
+        "Download unmatched rows report (ZIP)",
+        data=merge_result["unmatched_zip"],
+        file_name=f"{safe_filename(base_role)}_unmatched_reports.zip",
+        mime="application/zip",
     )
-
-    # If requested, exclude unmatched rows
-    if exclude_unmatched:
-        # For LEFT join, "right_only" should not happen; for safety and for INNER/other edge cases, handle anyway.
-        right_only = (merged[ind_col] == "right_only").sum()
-        left_only = (merged[ind_col] == "left_only").sum()
-
-        if right_only > 0:
-            exclusion_notes.append(f"{file_j}: excluded {right_only:,} orphan rows (present only in this file)")
-            merged = merged[merged[ind_col] != "right_only"].copy()
-
-        # Note: left_only rows are base rows with no match in this file.
-        # We do NOT drop these by default because base is authoritative, but we report them.
-        if left_only > 0:
-            exclusion_notes.append(f"{file_j}: {left_only:,} base records had no match in this file")
-
-    # Drop indicator column (keeps dataset clean)
-    merged = merged.drop(columns=[ind_col], errors="ignore")
-
-# Display summary
-if exclusion_notes:
-    st.info("Merge notes:\n\n- " + "\n- ".join(exclusion_notes))
 
 st.success(f"Merged rows: {len(merged):,} | Columns: {merged.shape[1]:,}")
 st.dataframe(merged.head(preview_rows), use_container_width=True)
 
 st.divider()
-st.subheader("3) Build export columns (map + transform + rename)")
+st.subheader("3) Build export columns")
 
 all_cols = list(merged.columns)
-
-
-tmpl_out: List[Dict[str, Any]] = list(tmpl_defaults.get("output_spec", [])) if tmpl_defaults else []
-default_num = max(10, len(tmpl_out))
-
-num_out = st.number_input("How many output columns?", min_value=1, max_value=200, value=int(default_num), step=1)
-
+template_output_rows = list(template_defaults.get("output_spec", []))
+num_out = st.number_input("How many output columns?", min_value=1, max_value=200, value=max(10, len(template_output_rows)), step=1)
 out_rows: List[Dict[str, Any]] = []
 
-for k in range(int(num_out)):
-    d_src = "(blank)"
-    d_tf = "None"
-    d_out = ""
-    d_params: Dict[str, Any] = {}
+for idx in range(int(num_out)):
+    defaults = template_output_rows[idx] if idx < len(template_output_rows) else {}
+    default_src = str(defaults.get("source", "(blank)"))
+    default_transform = str(defaults.get("transform", "None"))
+    default_name = str(defaults.get("output_name", ""))
+    default_params = dict(defaults.get("params", {}) or {})
 
-    if k < len(tmpl_out):
-        d_src = str(tmpl_out[k].get("source", "(blank)"))
-        d_tf = str(tmpl_out[k].get("transform", "None"))
-        d_out = str(tmpl_out[k].get("output_name", ""))
-        d_params = dict(tmpl_out[k].get("params", {}) or {})
-
-    if d_tf not in TRANSFORM_FUNCS:
-        d_tf = "None"
-
-    c1, c2, c3 = st.columns([3, 2, 3])
-    with c1:
+    col1, col2, col3 = st.columns([3, 2, 3])
+    with col1:
         src = st.selectbox(
-            f"Source column #{k+1}",
+            f"Source column #{idx + 1}",
             options=["(blank)"] + all_cols,
-            index=(["(blank)"] + all_cols).index(d_src) if d_src in (["(blank)"] + all_cols) else 0,
-            key=f"src_{k}",
+            index=(["(blank)"] + all_cols).index(default_src) if default_src in (["(blank)"] + all_cols) else 0,
+            key=f"src_{idx}",
         )
-
-    with c2:
-        tf = st.selectbox(
-            f"Transform #{k+1}",
+    with col2:
+        tf_name = st.selectbox(
+            f"Transform #{idx + 1}",
             options=list(TRANSFORM_FUNCS.keys()),
-            index=list(TRANSFORM_FUNCS.keys()).index(d_tf),
-            key=f"tf_{k}",
+            index=list(TRANSFORM_FUNCS.keys()).index(default_transform) if default_transform in TRANSFORM_FUNCS else 0,
+            key=f"tf_{idx}",
         )
-
-    with c3:
-        default_out_name = d_out if d_out else ("" if src == "(blank)" else str(src))
-        out_name = st.text_input(
-            f"Output column name #{k+1}",
-            value=default_out_name,
-            key=f"out_{k}",
-        )
+    with col3:
+        output_name = st.text_input(
+            f"Output column name #{idx + 1}",
+            value=default_name if default_name else ("" if src == "(blank)" else str(src)),
+            key=f"out_{idx}",
+        ).strip()
 
     params: Dict[str, Any] = {}
-    if tf == "Digits: keep last N":
-        params["n"] = st.number_input(
-            f"N (digits) #{k+1}",
-            min_value=1,
-            max_value=50,
-            value=int(d_params.get("n", 4)),
-            step=1,
-            key=f"n_{k}",
-        )
-    elif tf == "Extract by regex":
-        params["pattern"] = st.text_input(
-            f"Regex pattern #{k+1}",
-            value=str(d_params.get("pattern", r"(\w+)")),
-            key=f"rx_{k}",
-        )
-        params["group"] = st.number_input(
-            f"Regex group #{k+1}",
-            min_value=0,
-            max_value=20,
-            value=int(d_params.get("group", 1)),
-            step=1,
-            key=f"grp_{k}",
-        )
-        params["ignore_case"] = st.checkbox(
-            f"Ignore case #{k+1}",
-            value=bool(d_params.get("ignore_case", True)),
-            key=f"ic_{k}",
-        )
-    elif tf == "Split + take part":
-        params["delim"] = st.text_input(
-            f"Delimiter #{k+1}",
-            value=str(d_params.get("delim", ",")),
-            key=f"delim_{k}",
-        )
-        params["index"] = st.number_input(
-            f"Index (0-based; -1=last) #{k+1}",
-            min_value=-50,
-            max_value=50,
-            value=int(d_params.get("index", 0)),
-            step=1,
-            key=f"idx_{k}",
-        )
-    elif tf == "Prefix if missing":
-        params["prefix"] = st.text_input(
-            f"Prefix #{k+1}",
-            value=str(d_params.get("prefix", "")),
-            key=f"pre_{k}",
-        )
-    elif tf == "Suffix":
-        params["suffix"] = st.text_input(
-            f"Suffix #{k+1}",
-            value=str(d_params.get("suffix", "")),
-            key=f"suf_{k}",
-        )
-    elif tf == "Regex replace":
-        params["pattern"] = st.text_input(
-            f"Regex pattern #{k+1}",
-            value=str(d_params.get("pattern", r"\s+")),
-            key=f"rrx_{k}",
-        )
-        params["repl"] = st.text_input(
-            f"Replace with #{k+1}",
-            value=str(d_params.get("repl", "")),
-            key=f"rrepl_{k}",
-        )
-        params["ignore_case"] = st.checkbox(
-            f"Ignore case (replace) #{k+1}",
-            value=bool(d_params.get("ignore_case", True)),
-            key=f"ric_{k}",
-        )
+    if tf_name == "Digits: keep last N":
+        params["n"] = st.number_input(f"N #{idx + 1}", min_value=1, max_value=50, value=int(default_params.get("n", 4)), step=1, key=f"n_{idx}")
+    elif tf_name == "Extract by regex":
+        params["pattern"] = st.text_input(f"Regex pattern #{idx + 1}", value=str(default_params.get("pattern", r"(\w+)")), key=f"rx_{idx}")
+        params["group"] = st.number_input(f"Regex group #{idx + 1}", min_value=0, max_value=20, value=int(default_params.get("group", 1)), step=1, key=f"grp_{idx}")
+        params["ignore_case"] = st.checkbox(f"Ignore case #{idx + 1}", value=bool(default_params.get("ignore_case", True)), key=f"ic_{idx}")
+    elif tf_name == "Split + take part":
+        params["delim"] = st.text_input(f"Delimiter #{idx + 1}", value=str(default_params.get("delim", ",")), key=f"delim_{idx}")
+        params["index"] = st.number_input(f"Index #{idx + 1}", min_value=-50, max_value=50, value=int(default_params.get("index", 0)), step=1, key=f"idx_{idx}")
+    elif tf_name == "Prefix if missing":
+        params["prefix"] = st.text_input(f"Prefix #{idx + 1}", value=str(default_params.get("prefix", "")), key=f"pre_{idx}")
+    elif tf_name == "Suffix":
+        params["suffix"] = st.text_input(f"Suffix #{idx + 1}", value=str(default_params.get("suffix", "")), key=f"suf_{idx}")
+    elif tf_name == "Regex replace":
+        params["pattern"] = st.text_input(f"Regex pattern replace #{idx + 1}", value=str(default_params.get("pattern", r"\s+")), key=f"rrx_{idx}")
+        params["repl"] = st.text_input(f"Replace with #{idx + 1}", value=str(default_params.get("repl", "")), key=f"rrepl_{idx}")
+        params["ignore_case"] = st.checkbox(f"Ignore case replace #{idx + 1}", value=bool(default_params.get("ignore_case", True)), key=f"ric_{idx}")
 
-    out_rows.append({"source": src, "transform": tf, "params": params, "output_name": out_name.strip()})
+    out_rows.append({"source": src, "transform": tf_name, "params": params, "output_name": output_name})
+
+named_outputs = [row["output_name"] for row in out_rows if row["output_name"]]
+duplicate_outputs = sorted({name for name in named_outputs if named_outputs.count(name) > 1})
+if duplicate_outputs:
+    st.error("Output column names must be unique: " + ", ".join(duplicate_outputs))
+    st.stop()
 
 export_df = pd.DataFrame()
-
 for row in out_rows:
-    src = row["source"]
-    out_col = row["output_name"]
-    tf = row["transform"]
-    params = row.get("params", {}) or {}
-
-    if src == "(blank)" or not out_col:
+    if row["source"] == "(blank)" or not row["output_name"] or row["source"] not in merged.columns:
         continue
-    if src not in merged.columns:
-        continue
-
-    try:
-        export_df[out_col] = apply_transform(merged[src], tf, params)
-    except Exception:
-        export_df[out_col] = apply_transform(merged[src].astype(str), tf, params)
+    export_df[row["output_name"]] = apply_transform(merged[row["source"]], row["transform"], row["params"])
 
 st.subheader("Export preview")
 st.caption(f"Rows: {len(export_df):,} | Columns: {export_df.shape[1]:,}")
@@ -1005,50 +536,39 @@ st.dataframe(export_df.head(preview_rows), use_container_width=True)
 
 st.divider()
 st.subheader("4) Download")
-
-timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-base_name = safe_filename(base_role)
-
-out_name = f"{base_name}_{timestamp}.csv"
+merged_output_type = st.selectbox("Export format", options=SUPPORTED_OUTPUT_TYPES, index=0)
+merged_json_orient = render_json_options("merged") if merged_output_type == "json" else "records"
+merged_xml_options = render_xml_options("merged") if merged_output_type == "xml" else {"root": "rows", "row": "row"}
 try:
-    csv_bytes = to_csv_bytes(
+    render_download_button(
         df=export_df,
-        delimiter=delimiter,
-        encoding=encoding_map[encoding],
+        base_name=safe_filename(base_role),
+        output_type=merged_output_type,
+        delimiter=delimiter if merged_output_type != "tsv" else "\t",
+        encoding=encoding_map[encoding_label],
         quoting=quoting,
         escapechar_enabled=escapechar_enabled,
         date_format=date_format,
+        json_orient=merged_json_orient,
+        xml_root=merged_xml_options["root"],
+        xml_row=merged_xml_options["row"],
+        label_prefix="Download Merged/Transformed",
     )
-    st.download_button(
-        label="Download Merged/Transformed CSV",
-        data=csv_bytes,
-        file_name=out_name,
-        mime="text/csv",
-    )
-except Exception as e:
-    st.error(f"Failed to create CSV. Error: {e}")
+except Exception as exc:
+    st.error(f"Failed to create merged export. Error: {exc}")
 
 st.divider()
-st.subheader("5) Save mapping template (future-proof)")
-
-merge_keys_by_role = {cfg["role"]: cfg["key_col"] for cfg in file_configs}
-
+st.subheader("5) Save mapping template")
 template_payload = build_template_payload(
     join_type=join_type,
     base_role=base_role,
-    merge_keys_by_role=merge_keys_by_role,
+    merge_keys_by_role={entry["role"]: entry["key_cols"] for entry in file_entries},
+    duplicate_strategy_by_role={entry["role"]: entry["duplicate_strategy"] for entry in file_entries},
     out_rows=out_rows,
 )
-
-tmpl_json = json.dumps(template_payload, indent=2).encode("utf-8")
 st.download_button(
     "Download mapping template (.json)",
-    data=tmpl_json,
+    data=json.dumps(template_payload, indent=2).encode("utf-8"),
     file_name=f"{safe_filename(base_role)}_mapping_template.json",
     mime="application/json",
-)
-
-st.caption(
-    "Tip: Load the template next time to pre-fill merge keys and output mapping. "
-    "If a transform name is missing in a future version, it will safely fall back to 'None'."
 )
