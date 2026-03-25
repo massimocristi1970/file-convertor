@@ -219,6 +219,14 @@ def read_xml_bytes_safely(file_bytes: bytes) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def looks_like_xml_text(file_bytes: bytes) -> bool:
+    try:
+        text = read_text_bytes(file_bytes).lstrip()
+    except Exception:
+        return False
+    return text.startswith("<?xml") or text.startswith("<")
+
+
 def read_parquet_bytes_safely(file_bytes: bytes) -> pd.DataFrame:
     return pd.read_parquet(io.BytesIO(file_bytes))
 
@@ -250,7 +258,15 @@ def read_uploaded_file_as_df(
             delimiter = "\t"
         if file_type == "csv" and delimiter is None:
             delimiter = ","
-        if parse_mode == "Fixed width":
+        if file_type == "txt" and looks_like_xml_text(file_bytes):
+            try:
+                df = read_xml_bytes_safely(file_bytes)
+            except Exception:
+                if parse_mode == "Fixed width":
+                    df = read_fixed_width_bytes_safely(file_bytes, header_row)
+                else:
+                    df = read_delimited_bytes_safely(file_bytes, delimiter, header_row)
+        elif parse_mode == "Fixed width":
             df = read_fixed_width_bytes_safely(file_bytes, header_row)
         else:
             df = read_delimited_bytes_safely(file_bytes, delimiter, header_row)

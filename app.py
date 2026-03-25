@@ -16,6 +16,7 @@ from data_io import (
     force_columns_to_text,
     get_mime_type,
     list_xlsx_sheets,
+    looks_like_xml_text,
     parse_csv_columns,
     quoting_from_choice,
     read_uploaded_file_as_df,
@@ -39,6 +40,8 @@ def parse_file_with_ui(
     key_prefix: str,
 ) -> Dict[str, Any]:
     file_type = detect_file_type(file_obj.name)
+    file_bytes = file_obj.getvalue()
+    is_xml_text = file_type == "txt" and looks_like_xml_text(file_bytes)
     sheet_name: Optional[str] = None
     header_row = int(header_row_default)
     text_parse_mode = "Delimited"
@@ -102,11 +105,13 @@ def parse_file_with_ui(
     df = force_columns_to_text(df, force_text_cols)
     return {
         "file_type": file_type,
+        "is_xml_text": is_xml_text,
         "sheet_name": sheet_name,
         "header_row": header_row,
         "text_parse_mode": text_parse_mode,
         "text_delimiter": text_delimiter,
         "df": df,
+        "raw_bytes": file_bytes,
     }
 
 
@@ -150,10 +155,11 @@ def render_download_button(
     xml_root: str,
     xml_row: str,
     label_prefix: str,
+    raw_export_bytes: Optional[bytes] = None,
 ) -> None:
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     out_name = f"{base_name}_{timestamp}.{output_type}"
-    out_bytes = to_export_bytes(
+    out_bytes = raw_export_bytes if raw_export_bytes is not None else to_export_bytes(
         df=df,
         output_type=output_type,
         delimiter=delimiter,
@@ -314,7 +320,8 @@ if app_mode == "Simple Convert":
             st.stop()
 
     st.subheader("Preview")
-    st.caption(f"Detected input type: `{input_type}`")
+    input_label = f"{input_type} (XML content)" if parsed.get("is_xml_text") else input_type
+    st.caption(f"Detected input type: `{input_label}`")
     st.dataframe(parsed["df"].head(preview_rows), use_container_width=True)
     st.caption(f"Rows: {len(parsed['df']):,} | Columns: {parsed['df'].shape[1]:,}")
 
@@ -332,6 +339,7 @@ if app_mode == "Simple Convert":
             xml_root=xml_options["root"],
             xml_row=xml_options["row"],
             label_prefix="Download",
+            raw_export_bytes=parsed["raw_bytes"] if parsed.get("is_xml_text") and output_type == "xml" else None,
         )
     except Exception as exc:
         st.error(f"Failed to create export. Error: {exc}")
