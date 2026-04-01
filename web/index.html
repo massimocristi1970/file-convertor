@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Data Mapper</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="main">
+    <div class="page-frame">
+      <header class="hero-card">
+        <div class="section-header">
+          <div>
+            <h1>Data Mapper</h1>
+          </div>
+          <div class="inline-actions mode-switch">
+            <button class="btn mode-tab active" data-mode="simple" type="button">Simple Convert</button>
+            <button class="btn btn-secondary mode-tab" data-mode="merge" type="button">Merge + Map + Transform</button>
+          </div>
+        </div>
+      </header>
+
+      <section class="card stack" id="simple-mode">
+        <div class="section-header">
+          <div>
+            <h2>Simple Convert</h2>
+          </div>
+        </div>
+        <div class="form-grid form-grid--two">
+          <div class="form-group">
+            <label for="simple-file">File</label>
+            <input id="simple-file" type="file" accept=".xlsx,.csv,.tsv,.txt,.json,.xml">
+          </div>
+          <div class="form-group">
+            <label for="simple-output-type">Output format</label>
+            <select id="simple-output-type">
+              <option value="csv">CSV</option>
+              <option value="tsv">TSV</option>
+              <option value="txt">TXT</option>
+              <option value="xlsx">XLSX</option>
+              <option value="json">JSON</option>
+              <option value="xml">XML</option>
+            </select>
+          </div>
+          <div class="form-group text-settings">
+            <label for="simple-delimiter">Text delimiter</label>
+            <select id="simple-delimiter">
+              <option value="auto">Auto-detect</option>
+              <option value=",">Comma</option>
+              <option value=";">Semicolon</option>
+              <option value="\t">Tab</option>
+              <option value="|">Pipe</option>
+            </select>
+          </div>
+          <div class="form-group text-settings">
+            <label for="simple-header-row">Header row</label>
+            <input id="simple-header-row" type="number" min="1" value="1">
+          </div>
+        </div>
+        <div class="inline-actions">
+          <button class="btn" id="simple-download" type="button">Download Converted File</button>
+        </div>
+        <div class="alert alert-info" id="simple-status">Upload a file to begin.</div>
+        <div class="card table-card inner-card">
+          <div class="section-header">
+            <div>
+              <h3>Preview</h3>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table id="simple-table">
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="card stack hidden" id="merge-mode">
+        <div class="section-header">
+          <div>
+            <h2>Merge + Map + Transform</h2>
+          </div>
+          <div class="inline-actions">
+            <input id="merge-files" type="file" accept=".xlsx,.csv,.tsv,.txt,.json,.xml" multiple hidden>
+            <label class="btn" for="merge-files">Add Files</label>
+            <input id="template-file" type="file" accept=".json" hidden>
+            <label class="btn btn-secondary" for="template-file">Load Template</label>
+            <button class="btn btn-ghost" id="download-template" type="button">Download Template</button>
+          </div>
+        </div>
+        <div class="alert alert-info" id="merge-status">Add one or more files to begin.</div>
+        <div class="file-list stack" id="merge-file-list"></div>
+
+        <div class="card inner-card stack">
+          <div class="section-header">
+            <div>
+              <h3>Merge</h3>
+            </div>
+          </div>
+          <div class="form-grid form-grid--three">
+            <div class="form-group">
+              <label for="base-role">Base role</label>
+              <select id="base-role"></select>
+            </div>
+            <div class="form-group">
+              <label for="join-type">Join type</label>
+              <select id="join-type">
+                <option value="left">Left</option>
+                <option value="inner">Inner</option>
+                <option value="outer">Outer</option>
+              </select>
+            </div>
+            <label class="checkbox inline-checkbox"><input id="exclude-unmatched" type="checkbox" checked><span>Exclude unmatched</span></label>
+          </div>
+          <div class="inline-actions">
+            <button class="btn" id="run-merge" type="button">Run Merge</button>
+            <button class="btn btn-secondary" id="download-unmatched" type="button">Download Unmatched ZIP</button>
+          </div>
+          <div class="stats-strip compact" id="merge-diagnostics"></div>
+          <div class="surface-panel" id="merge-notes"></div>
+        </div>
+
+        <div class="card inner-card stack">
+          <div class="section-header">
+            <div>
+              <h3>Output Mapping</h3>
+            </div>
+            <div class="inline-actions">
+              <input id="output-columns-count" type="number" min="1" value="10">
+              <button class="btn btn-secondary" id="build-output-rows" type="button">Apply Count</button>
+            </div>
+          </div>
+          <div class="mapping-list stack" id="mapping-list"></div>
+        </div>
+
+        <div class="card inner-card stack">
+          <div class="section-header">
+            <div>
+              <h3>Export</h3>
+            </div>
+          </div>
+          <div class="form-grid form-grid--two">
+            <div class="form-group">
+              <label for="merge-output-type">Output format</label>
+              <select id="merge-output-type">
+                <option value="csv">CSV</option>
+                <option value="tsv">TSV</option>
+                <option value="txt">TXT</option>
+                <option value="xlsx">XLSX</option>
+                <option value="json">JSON</option>
+                <option value="xml">XML</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="merge-export-name">Export name</label>
+              <input id="merge-export-name" type="text" value="merged_output">
+            </div>
+          </div>
+          <div class="inline-actions">
+            <button class="btn" id="download-merged" type="button">Download Output</button>
+          </div>
+          <div class="table-wrap">
+            <table id="merge-table">
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="./app.js" defer></script>
+</body>
+</html>

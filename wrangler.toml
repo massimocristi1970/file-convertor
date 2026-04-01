@@ -1,0 +1,5 @@
+name = "file-convertor-web"
+compatibility_date = "2026-04-01"
+
+[assets]
+directory = "./web"

@@ -1,0 +1,13 @@
+{
+  "name": "file-convertor",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "npx wrangler pages dev web",
+    "deploy": "wrangler deploy",
+    "check:web": "node --check web/app.js"
+  },
+  "devDependencies": {
+    "wrangler": "^4.10.0"
+  }
+}
