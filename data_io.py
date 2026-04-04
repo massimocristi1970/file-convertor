@@ -181,6 +181,30 @@ def read_delimited_bytes_safely(file_bytes: bytes, delimiter: Optional[str], hea
     raise RuntimeError(f"Could not read delimited text with common encodings. Last error: {last_err}")
 
 
+def read_plain_text_lines(file_bytes: bytes) -> pd.DataFrame:
+    text = read_text_bytes(file_bytes)
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return pd.DataFrame({"value": lines})
+
+
+def should_treat_txt_as_plain_text(file_bytes: bytes, delimiter: Optional[str], header_row: int) -> bool:
+    if delimiter is not None or header_row != 1:
+        return False
+
+    text = read_text_bytes(file_bytes)
+    non_empty_lines = [line for line in text.splitlines() if line.strip()]
+    if len(non_empty_lines) <= 1:
+        return True
+
+    sample = "\n".join(non_empty_lines[:5])
+    detected = sniff_delimiter(sample, fallback="")
+    if not detected:
+        return True
+
+    split_counts = [len(line.split(detected)) for line in non_empty_lines[:5]]
+    return max(split_counts, default=1) <= 1
+
+
 def read_fixed_width_bytes_safely(file_bytes: bytes, header_row: int) -> pd.DataFrame:
     text = read_text_bytes(file_bytes)
     return pd.read_fwf(io.StringIO(text), header=header_row - 1)
@@ -198,7 +222,19 @@ def _records_from_json(data: Any) -> List[Dict[str, Any]]:
 
 
 def read_json_bytes_safely(file_bytes: bytes) -> pd.DataFrame:
-    data = json.loads(read_text_bytes(file_bytes))
+    text = read_text_bytes(file_bytes)
+    data = json.loads(text)
+    if isinstance(data, dict) and {"columns", "data"}.issubset(data.keys()):
+        return pd.DataFrame(data["data"], columns=data.get("columns"), index=data.get("index"))
+    if isinstance(data, dict) and data and all(isinstance(value, dict) for value in data.values()):
+        numeric_outer_keys = all(str(key).isdigit() for key in data.keys())
+        numeric_inner_keys = all(all(str(inner_key).isdigit() for inner_key in value.keys()) for value in data.values())
+        if numeric_outer_keys:
+            return pd.DataFrame.from_dict(data, orient="index")
+        if numeric_inner_keys:
+            return pd.DataFrame.from_dict(data, orient="columns")
+    if isinstance(data, dict) and data and all(isinstance(value, list) for value in data.values()):
+        return pd.DataFrame(data)
     return pd.json_normalize(_records_from_json(data))
 
 
@@ -266,6 +302,8 @@ def read_uploaded_file_as_df(
                     df = read_fixed_width_bytes_safely(file_bytes, header_row)
                 else:
                     df = read_delimited_bytes_safely(file_bytes, delimiter, header_row)
+        elif file_type == "txt" and parse_mode != "Fixed width" and should_treat_txt_as_plain_text(file_bytes, delimiter, header_row):
+            df = read_plain_text_lines(file_bytes)
         elif parse_mode == "Fixed width":
             df = read_fixed_width_bytes_safely(file_bytes, header_row)
         else:

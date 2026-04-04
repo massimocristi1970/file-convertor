@@ -50,10 +50,46 @@ function parseDelimited(text, delimiter, headerRow) {
   const headers = rows[Math.max(0, headerRow - 1)] || [];
   return rows.slice(headerRow).map((row) => Object.fromEntries(headers.map((header, index) => [header || `Column_${index + 1}`, row[index] ?? ""])));
 }
+function parsePlainText(text) {
+  return text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((value) => ({ value }));
+}
+function shouldTreatTxtAsPlainText(text, delimiter, headerRow) {
+  if (delimiter !== "auto" || Number(headerRow) !== 1) return false;
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (lines.length <= 1) return true;
+  const candidates = [",", ";", "\t", "|"];
+  const hasStructuredDelimiter = candidates.some((candidate) => lines.some((line) => line.includes(candidate)));
+  if (!hasStructuredDelimiter) return true;
+  const detected = autoDelimiter(text);
+  const splitCounts = lines.slice(0, 5).map((line) => line.split(detected).length);
+  return Math.max(...splitCounts, 1) <= 1;
+}
+function rowsFromColumnObject(data) {
+  const rowIds = Array.from(new Set(Object.values(data).flatMap((value) => Object.keys(value || {}))));
+  return rowIds.map((rowId) => Object.fromEntries(Object.entries(data).map(([column, values]) => [column, values?.[rowId] ?? ""])));
+}
 function parseJson(text) {
   const data = JSON.parse(text);
   if (Array.isArray(data)) return data.map((item) => (typeof item === "object" && item !== null ? item : { value: item }));
-  if (data && typeof data === "object") return [data];
+  if (data && typeof data === "object") {
+    if (Array.isArray(data.data) && Array.isArray(data.columns)) {
+      return data.data.map((row) => Object.fromEntries(data.columns.map((column, index) => [column, row[index] ?? ""])));
+    }
+    const values = Object.values(data);
+    if (values.length && values.every((value) => Array.isArray(value))) {
+      const rowCount = Math.max(...values.map((value) => value.length), 0);
+      return Array.from({ length: rowCount }, (_, index) => Object.fromEntries(Object.entries(data).map(([column, columnValues]) => [column, columnValues[index] ?? ""])));
+    }
+    if (values.length && values.every((value) => value && typeof value === "object" && !Array.isArray(value))) {
+      const numericOuterKeys = Object.keys(data).every((key) => /^\d+$/.test(key));
+      return numericOuterKeys ? Object.values(data) : rowsFromColumnObject(data);
+    }
+    const listValues = values.filter((value) => Array.isArray(value));
+    if (listValues.length === 1) {
+      return listValues[0].map((item) => (typeof item === "object" && item !== null ? item : { value: item }));
+    }
+    return [data];
+  }
   return [{ value: data }];
 }
 function parseXml(text) {
@@ -98,6 +134,9 @@ async function parseFile(file, options = {}) {
   if (fileType === "json") return { fileType, rows: parseJson(text), fileName: file.name };
   if (fileType === "xml" || (fileType === "txt" && looksLikeXmlText(text))) return { fileType: fileType === "txt" ? "xml" : fileType, rows: parseXml(text), fileName: file.name };
   const usedDelimiter = fileType === "csv" ? "," : fileType === "tsv" ? "\t" : delimiter;
+  if (fileType === "txt" && shouldTreatTxtAsPlainText(text, usedDelimiter, headerRow)) {
+    return { fileType, rows: parsePlainText(text), fileName: file.name };
+  }
   return { fileType, rows: parseDelimited(text, usedDelimiter, headerRow), fileName: file.name };
 }
 async function exportRows(rows, fileName, type) {
@@ -444,3 +483,5 @@ function bindEvents() {
 }
 
 bindEvents();
+
+

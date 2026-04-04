@@ -1,12 +1,25 @@
 import unittest
+from types import SimpleNamespace
 
 import pandas as pd
 
-from data_io import read_xml_bytes_safely, to_xml_bytes
+from data_io import (
+    SUPPORTED_INPUT_TYPES,
+    SUPPORTED_OUTPUT_TYPES,
+    get_mime_type,
+    read_json_bytes_safely,
+    read_uploaded_file_as_df,
+    read_xml_bytes_safely,
+    to_export_bytes,
+    to_xml_bytes,
+)
 from merge_utils import build_composite_key, merge_dataframes
 
 
 class CoreTests(unittest.TestCase):
+    def _file_obj(self, payload: bytes) -> SimpleNamespace:
+        return SimpleNamespace(getvalue=lambda: payload)
+
     def test_xml_round_trip_preserves_columns(self) -> None:
         df = pd.DataFrame([{"Account": "0012", "Name": "Ada"}, {"Account": "0099", "Name": "Grace"}])
         xml_bytes = to_xml_bytes(df, date_format="%Y-%m-%d")
@@ -39,6 +52,103 @@ class CoreTests(unittest.TestCase):
         merged = result["merged"]
         self.assertEqual(len(merged), 1)
         self.assertEqual(merged.iloc[0]["AppID"], "1")
+
+    def test_txt_plain_text_reads_as_value_column(self) -> None:
+        restored = read_uploaded_file_as_df(
+            file_obj=self._file_obj(b"Ada\nGrace\n"),
+            file_type="txt",
+            sheet_name=None,
+            header_row=1,
+            formula_mode="Cached values (recommended)",
+            drop_empty=True,
+            text_parse_mode="Delimited",
+            text_delimiter=None,
+        )
+        self.assertEqual(restored.to_dict(orient="records"), [{"value": "Ada"}, {"value": "Grace"}])
+
+    def test_json_round_trip_supports_all_export_orientations(self) -> None:
+        df = pd.DataFrame([{"Account": "0012", "Name": "Ada"}, {"Account": "0099", "Name": "Grace"}])
+
+        for orient in ("records", "split", "index", "columns"):
+            with self.subTest(orient=orient):
+                json_bytes = to_export_bytes(
+                    df=df,
+                    output_type="json",
+                    delimiter=",",
+                    encoding="utf-8",
+                    quoting=0,
+                    escapechar_enabled=False,
+                    date_format="%Y-%m-%d",
+                    json_orient=orient,
+                )
+                restored = read_json_bytes_safely(json_bytes).fillna("").astype(str)
+                self.assertEqual(restored.to_dict(orient="records"), df.astype(str).to_dict(orient="records"))
+
+    def test_every_supported_output_type_exports_bytes(self) -> None:
+        df = pd.DataFrame([{"Account": "0012", "Name": "Ada"}])
+
+        for output_type in SUPPORTED_OUTPUT_TYPES:
+            with self.subTest(output_type=output_type):
+                out = to_export_bytes(
+                    df=df,
+                    output_type=output_type,
+                    delimiter="\t" if output_type == "tsv" else ",",
+                    encoding="utf-8",
+                    quoting=0,
+                    escapechar_enabled=False,
+                    date_format="%Y-%m-%d",
+                    json_orient="records",
+                )
+                self.assertIsInstance(out, bytes)
+                self.assertGreater(len(out), 0)
+                self.assertTrue(get_mime_type(output_type))
+
+    def test_supported_input_types_are_covered_by_readers(self) -> None:
+        fixtures = {
+            "csv": b"Account,Name\n0012,Ada\n",
+            "tsv": b"Account\tName\n0012\tAda\n",
+            "txt": b"Account,Name\n0012,Ada\n",
+            "json": b'[{"Account":"0012","Name":"Ada"}]',
+            "xml": b'<?xml version="1.0" encoding="utf-8"?><rows><row><field name="Account">0012</field><field name="Name">Ada</field></row></rows>',
+        }
+
+        for input_type in SUPPORTED_INPUT_TYPES:
+            with self.subTest(input_type=input_type):
+                if input_type == "xlsx":
+                    payload = to_export_bytes(
+                        df=pd.DataFrame([{"Account": "0012", "Name": "Ada"}]),
+                        output_type="xlsx",
+                        delimiter=",",
+                        encoding="utf-8",
+                        quoting=0,
+                        escapechar_enabled=False,
+                        date_format="%Y-%m-%d",
+                    )
+                elif input_type == "parquet":
+                    payload = to_export_bytes(
+                        df=pd.DataFrame([{"Account": "0012", "Name": "Ada"}]),
+                        output_type="parquet",
+                        delimiter=",",
+                        encoding="utf-8",
+                        quoting=0,
+                        escapechar_enabled=False,
+                        date_format="%Y-%m-%d",
+                    )
+                else:
+                    payload = fixtures[input_type]
+
+                restored = read_uploaded_file_as_df(
+                    file_obj=self._file_obj(payload),
+                    file_type=input_type,
+                    sheet_name="Sheet1" if input_type == "xlsx" else None,
+                    header_row=1,
+                    formula_mode="Cached values (recommended)",
+                    drop_empty=True,
+                    text_parse_mode="Delimited",
+                    text_delimiter=None,
+                )
+                self.assertFalse(restored.empty)
+                self.assertIn("Account", restored.columns)
 
 
 if __name__ == "__main__":
