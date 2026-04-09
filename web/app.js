@@ -32,12 +32,20 @@ function firstMatchingColumn(columns, aliases) {
   }
   return "";
 }
+function matchingColumns(columns, aliases) {
+  const normalisedAliases = aliases.map((alias) => normaliseLabel(alias));
+  return Array.from(new Set(columns.filter((column) => {
+    const normalisedColumn = normaliseLabel(column);
+    return normalisedAliases.some((alias) => alias && (normalisedColumn.includes(alias) || alias.includes(normalisedColumn)));
+  })));
+}
 function buildCallerAiOutputSpec(columns) {
   const nameSource = firstMatchingColumn(columns, ["name", "full name", "customer name", "client name", "contact name"]);
   const phoneSource = firstMatchingColumn(columns, ["phone", "phone number", "mobile", "mobile number", "telephone", "tel", "contact number"]);
   const cardSource = firstMatchingColumn(columns, ["card number", "card", "cardnumber", "account number", "account"]);
   const dobSource = firstMatchingColumn(columns, ["date of birth", "dob", "birth date", "dateofbirth"]);
-  const postcodeSource = firstMatchingColumn(columns, ["postcode", "post code", "postal code", "postalcode", "zip", "zip code", "zipcode", "address", "full address", "address line 1"]);
+  const postcodeCandidates = matchingColumns(columns, ["postcode", "post code", "postal code", "postalcode", "zip", "zip code", "zipcode", "address", "full address", "address line 1", "address1", "street"]);
+  const postcodeSource = postcodeCandidates[0] || "";
   const titleSource = firstMatchingColumn(columns, ["title", "salutation", "prefix", "customer title"]) || nameSource;
   const surnameSource = firstMatchingColumn(columns, ["surname", "last name", "family name"]) || nameSource;
   return [
@@ -45,7 +53,7 @@ function buildCallerAiOutputSpec(columns) {
     { source: phoneSource || "(blank)", transform: "UK mobile -> 44", params: {}, output_name: "PhoneNumber" },
     { source: cardSource || "(blank)", transform: "Digits: keep last N", params: { n: 4 }, output_name: "CardNumber" },
     { source: dobSource || "(blank)", transform: "None", params: {}, output_name: "DateOfBirth" },
-    { source: postcodeSource || "(blank)", transform: "UK Postcode (extract)", params: {}, output_name: "PostalCode" },
+    { source: postcodeSource || "(blank)", transform: "UK Postcode (extract)", params: { fallback_sources: postcodeCandidates.slice(1) }, output_name: "PostalCode" },
     { source: titleSource || "(blank)", transform: "Name: extract title", params: {}, output_name: "Title" },
     { source: surnameSource || "(blank)", transform: "Name: extract surname", params: {}, output_name: "Surname" }
   ];
@@ -436,12 +444,23 @@ function updateCallerAiExportRows() {
         out[row.output_name] = "";
         return;
       }
-      if (!state.callerAi.columns.includes(row.source)) {
+      const fallbackSources = Array.isArray(row.params?.fallback_sources) ? row.params.fallback_sources : [];
+      const candidateSources = [row.source, ...fallbackSources.filter((candidate) => candidate !== row.source)];
+      const availableSources = candidateSources.filter((candidate) => state.callerAi.columns.includes(candidate));
+      if (!availableSources.length) {
         missingSources.push(`${row.output_name} <- ${row.source}`);
         out[row.output_name] = "";
         return;
       }
-      out[row.output_name] = applyTransformValue(sourceRow[row.source], row.transform, row.params || {});
+      let value = "";
+      for (const candidate of availableSources) {
+        const transformed = applyTransformValue(sourceRow[candidate], row.transform, row.params || {});
+        if (String(transformed || "").trim()) {
+          value = transformed;
+          break;
+        }
+      }
+      out[row.output_name] = value;
     });
     return out;
   });

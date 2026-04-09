@@ -40,6 +40,15 @@ class MappingUtilsTests(unittest.TestCase):
         self.assertTrue(export_df.empty)
         self.assertEqual(missing, ["PhoneNumber <- Phone"])
 
+    def test_build_export_dataframe_uses_fallback_sources(self) -> None:
+        source = pd.DataFrame([{"Address": "10 Downing Street", "Address Line 1": "London SW1A 2AA"}])
+        export_df, missing = build_export_dataframe(
+            source,
+            [{"source": "Address", "transform": "UK Postcode (extract)", "params": {"fallback_sources": ["Address Line 1"]}, "output_name": "PostalCode"}],
+        )
+        self.assertEqual(missing, [])
+        self.assertEqual(export_df.iloc[0]["PostalCode"], "SW1A 2AA")
+
     def test_name_transforms_extract_first_title_and_surname(self) -> None:
         series = pd.Series(["Dr Ada Lovelace"])
         self.assertEqual(apply_transform(series, "Name: extract first", {}).iloc[0], "Ada")
