@@ -1,6 +1,6 @@
 const INPUT_TYPES = ["xlsx", "csv", "tsv", "txt", "json", "xml"];
 const OUTPUT_TYPES = ["csv", "tsv", "txt", "xlsx", "json", "xml"];
-const TRANSFORMS = ["None", "Text (force)", "UK Postcode (extract)", "Address first line (before comma)", "UK mobile -> 44", "Digits only", "Digits: keep last N", "Extract by regex", "Split + take part", "Prefix if missing", "Suffix", "Regex replace", "Name: extract title", "Name: extract surname"];
+const TRANSFORMS = ["None", "Text (force)", "UK Postcode (extract)", "Address first line (before comma)", "UK mobile -> 44", "Digits only", "Digits: keep last N", "Extract by regex", "Split + take part", "Prefix if missing", "Suffix", "Regex replace", "Name: extract first", "Name: extract title", "Name: extract surname"];
 const CALLER_AI_REQUIRED_COLUMNS = ["Name", "PhoneNumber", "CardNumber", "DateOfBirth", "PostalCode", "Title", "Surname"];
 const state = {
   mode: "simple",
@@ -37,11 +37,11 @@ function buildCallerAiOutputSpec(columns) {
   const phoneSource = firstMatchingColumn(columns, ["phone", "phone number", "mobile", "mobile number", "telephone", "tel", "contact number"]);
   const cardSource = firstMatchingColumn(columns, ["card number", "card", "cardnumber", "account number", "account"]);
   const dobSource = firstMatchingColumn(columns, ["date of birth", "dob", "birth date", "dateofbirth"]);
-  const postcodeSource = firstMatchingColumn(columns, ["postcode", "postal code", "postalcode", "zip", "zip code", "address", "full address"]);
-  const titleSource = firstMatchingColumn(columns, ["title"]) || nameSource;
+  const postcodeSource = firstMatchingColumn(columns, ["postcode", "post code", "postal code", "postalcode", "zip", "zip code", "zipcode", "address", "full address", "address line 1"]);
+  const titleSource = firstMatchingColumn(columns, ["title", "salutation", "prefix", "customer title"]) || nameSource;
   const surnameSource = firstMatchingColumn(columns, ["surname", "last name", "family name"]) || nameSource;
   return [
-    { source: nameSource || "(blank)", transform: "None", params: {}, output_name: "Name" },
+    { source: nameSource || "(blank)", transform: "Name: extract first", params: {}, output_name: "Name" },
     { source: phoneSource || "(blank)", transform: "UK mobile -> 44", params: {}, output_name: "PhoneNumber" },
     { source: cardSource || "(blank)", transform: "Digits: keep last N", params: { n: 4 }, output_name: "CardNumber" },
     { source: dobSource || "(blank)", transform: "None", params: {}, output_name: "DateOfBirth" },
@@ -285,7 +285,17 @@ function applyTransformValue(value, name, params) {
   if (name === "Prefix if missing") { const prefix = String(params.prefix || ""); return prefix && !text.startsWith(prefix) ? `${prefix}${text}` : text; }
   if (name === "Suffix") return `${text}${String(params.suffix || "")}`;
   if (name === "Regex replace") { try { return text.replace(new RegExp(params.pattern || "", params.ignore_case ? "ig" : "g"), params.repl || ""); } catch { return text; } }
-  if (name === "Name: extract title") { const match = text.trim().match(/^(mr|mrs|ms|miss|mx|dr|prof|sir|lady|lord|rev)\.?\s+/i); return match ? match[0].trim().replace(/\.$/, "") : ""; }
+  if (name === "Name: extract first") {
+    const withoutTitle = text.trim().replace(/^(mr|mrs|ms|miss|mx|dr|prof|sir|lady|lord|rev)\.?\s+/i, "");
+    const parts = withoutTitle.split(/\s+/).filter(Boolean);
+    return parts.length ? parts[0].replace(/,$/, "") : "";
+  }
+  if (name === "Name: extract title") {
+    const match = text.trim().match(/^(mr|mrs|ms|miss|mx|dr|prof|sir|lady|lord|rev)\.?\s+/i);
+    if (match) return match[0].trim().replace(/\.$/, "");
+    const simple = text.trim().replace(/\.$/, "");
+    return /^(mr|mrs|ms|miss|mx|dr|prof|sir|lady|lord|rev)$/i.test(simple) ? simple : "";
+  }
   if (name === "Name: extract surname") {
     const withoutTitle = text.trim().replace(/^(mr|mrs|ms|miss|mx|dr|prof|sir|lady|lord|rev)\.?\s+/i, "");
     const parts = withoutTitle.split(/\s+/).filter(Boolean);

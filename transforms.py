@@ -110,7 +110,18 @@ def tf_name_title(x: str, p: Dict[str, Any]) -> str:
     if not s:
         return ""
     match = TITLE_RE.match(s)
-    return match.group(0).strip().rstrip(".") if match else ""
+    if match:
+        return match.group(0).strip().rstrip(".")
+    simple = s.rstrip(".").strip()
+    return simple if re.fullmatch(r"(?i)mr|mrs|ms|miss|mx|dr|prof|sir|lady|lord|rev", simple) else ""
+
+
+def tf_name_first(x: str, p: Dict[str, Any]) -> str:
+    s = TITLE_RE.sub("", x.strip())
+    if not s:
+        return ""
+    tokens = [token.strip(",") for token in re.split(r"\s+", s) if token]
+    return tokens[0] if tokens else ""
 
 
 def tf_name_surname(x: str, p: Dict[str, Any]) -> str:
@@ -137,6 +148,7 @@ TRANSFORM_FUNCS = {
     "Prefix if missing": tf_prefix_if_missing,
     "Suffix": tf_suffix,
     "Regex replace": tf_regex_replace,
+    "Name: extract first": tf_name_first,
     "Name: extract title": tf_name_title,
     "Name: extract surname": tf_name_surname,
 }

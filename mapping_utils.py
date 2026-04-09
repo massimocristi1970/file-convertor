@@ -27,12 +27,15 @@ def build_caller_ai_output_spec(columns: List[str]) -> List[Dict[str, Any]]:
     phone_source = _first_matching_column(columns, ["phone", "phone number", "mobile", "mobile number", "telephone", "tel", "contact number"])
     card_source = _first_matching_column(columns, ["card number", "card", "cardnumber", "account number", "account"])
     dob_source = _first_matching_column(columns, ["date of birth", "dob", "birth date", "dateofbirth"])
-    postcode_source = _first_matching_column(columns, ["postcode", "postal code", "postalcode", "zip", "zip code", "address", "full address"])
-    title_source = _first_matching_column(columns, ["title"]) or name_source
+    postcode_source = _first_matching_column(
+        columns,
+        ["postcode", "post code", "postal code", "postalcode", "zip", "zip code", "zipcode", "address", "full address", "address line 1"],
+    )
+    title_source = _first_matching_column(columns, ["title", "salutation", "prefix", "customer title"]) or name_source
     surname_source = _first_matching_column(columns, ["surname", "last name", "family name"]) or name_source
 
     return [
-        {"source": name_source or "(blank)", "transform": "None", "params": {}, "output_name": "Name"},
+        {"source": name_source or "(blank)", "transform": "Name: extract first", "params": {}, "output_name": "Name"},
         {"source": phone_source or "(blank)", "transform": "UK mobile -> 44", "params": {}, "output_name": "PhoneNumber"},
         {"source": card_source or "(blank)", "transform": "Digits: keep last N", "params": {"n": 4}, "output_name": "CardNumber"},
         {"source": dob_source or "(blank)", "transform": "None", "params": {}, "output_name": "DateOfBirth"},
