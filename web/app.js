@@ -1,11 +1,13 @@
 const INPUT_TYPES = ["xlsx", "csv", "tsv", "txt", "json", "xml"];
 const OUTPUT_TYPES = ["csv", "tsv", "txt", "xlsx", "json", "xml"];
-const TRANSFORMS = ["None", "Text (force)", "UK Postcode (extract)", "Address first line (before comma)", "UK mobile -> 44", "Digits: keep last N", "Extract by regex", "Split + take part", "Prefix if missing", "Suffix", "Regex replace"];
+const TRANSFORMS = ["None", "Text (force)", "UK Postcode (extract)", "Address first line (before comma)", "UK mobile -> 44", "Digits only", "Digits: keep last N", "Extract by regex", "Split + take part", "Prefix if missing", "Suffix", "Regex replace", "Name: extract title", "Name: extract surname"];
+const CALLER_AI_REQUIRED_COLUMNS = ["Name", "PhoneNumber", "CardNumber", "DateOfBirth", "PostalCode", "Title", "Surname"];
 const state = {
   mode: "simple",
   simple: { file: null, rows: [], columns: [], fileType: null, parsedName: "output" },
+  callerAi: { file: null, rows: [], columns: [], exportRows: [], previewRows: [], previewColumns: [], parsedName: "caller_ai" },
   merge: {
-    files: [], mergedRows: [], mergedColumns: [], exportRows: [], diagnostics: [], notes: [], template: null, unmatchedReports: []
+    files: [], mergedRows: [], mergedColumns: [], exportRows: [], diagnostics: [], notes: [], template: null, unmatchedReports: [], previewRows: [], previewColumns: []
   }
 };
 
@@ -18,6 +20,36 @@ function detectFileType(name) {
   return ext;
 }
 function parseColumns(raw) { return String(raw || "").split(",").map((part) => part.trim()).filter(Boolean); }
+function normaliseTransformName(name) {
+  return name === "UK mobile → 44" ? "UK mobile -> 44" : (name || "None");
+}
+function normaliseLabel(value) { return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, ""); }
+function firstMatchingColumn(columns, aliases) {
+  const normalised = new Map(columns.map((column) => [normaliseLabel(column), column]));
+  for (const alias of aliases) {
+    const match = normalised.get(normaliseLabel(alias));
+    if (match) return match;
+  }
+  return "";
+}
+function buildCallerAiOutputSpec(columns) {
+  const nameSource = firstMatchingColumn(columns, ["name", "full name", "customer name", "client name", "contact name"]);
+  const phoneSource = firstMatchingColumn(columns, ["phone", "phone number", "mobile", "mobile number", "telephone", "tel", "contact number"]);
+  const cardSource = firstMatchingColumn(columns, ["card number", "card", "cardnumber", "account number", "account"]);
+  const dobSource = firstMatchingColumn(columns, ["date of birth", "dob", "birth date", "dateofbirth"]);
+  const postcodeSource = firstMatchingColumn(columns, ["postcode", "postal code", "postalcode", "zip", "zip code", "address", "full address"]);
+  const titleSource = firstMatchingColumn(columns, ["title"]) || nameSource;
+  const surnameSource = firstMatchingColumn(columns, ["surname", "last name", "family name"]) || nameSource;
+  return [
+    { source: nameSource || "(blank)", transform: "None", params: {}, output_name: "Name" },
+    { source: phoneSource || "(blank)", transform: "UK mobile -> 44", params: {}, output_name: "PhoneNumber" },
+    { source: cardSource || "(blank)", transform: "Digits: keep last N", params: { n: 4 }, output_name: "CardNumber" },
+    { source: dobSource || "(blank)", transform: "None", params: {}, output_name: "DateOfBirth" },
+    { source: postcodeSource || "(blank)", transform: "UK Postcode (extract)", params: {}, output_name: "PostalCode" },
+    { source: titleSource || "(blank)", transform: "Name: extract title", params: {}, output_name: "Title" },
+    { source: surnameSource || "(blank)", transform: "Name: extract surname", params: {}, output_name: "Surname" }
+  ];
+}
 function looksLikeXmlText(text) { const trimmed = text.trimStart(); return trimmed.startsWith("<?xml") || trimmed.startsWith("<"); }
 function autoDelimiter(text) {
   const sample = text.split(/\r?\n/).slice(0, 5).join("\n");
@@ -109,9 +141,9 @@ function toXml(rows, rootName = "rows", rowName = "row") {
   const escape = (value) => String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;");
   return `<?xml version="1.0" encoding="utf-8"?>\n<${rootName}>${rows.map((row) => `<${rowName}>${Object.entries(row).map(([key, value]) => `<field name="${escape(key)}">${escape(value ?? "")}</field>`).join("")}</${rowName}>`).join("")}</${rootName}>`;
 }
-function rowsToCsv(rows, delimiter) {
-  if (!rows.length) return "";
-  const columns = uniqueColumns(rows);
+function rowsToCsv(rows, delimiter, columnsOverride = []) {
+  const columns = columnsOverride.length ? columnsOverride : uniqueColumns(rows);
+  if (!columns.length) return "";
   const esc = (value) => {
     const text = String(value ?? "");
     return /["\n,;|\t]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
@@ -139,16 +171,17 @@ async function parseFile(file, options = {}) {
   }
   return { fileType, rows: parseDelimited(text, usedDelimiter, headerRow), fileName: file.name };
 }
-async function exportRows(rows, fileName, type) {
+async function exportRows(rows, fileName, type, columnsOverride = []) {
   const name = `${safeFilename(fileName)}.${type}`;
+  const textDelimiter = type === "tsv" ? "\t" : ",";
   if (type === "xlsx") {
-    const worksheet = XLSX.utils.json_to_sheet(rows);
+    const worksheet = XLSX.utils.json_to_sheet(rows, { header: columnsOverride.length ? columnsOverride : undefined });
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "Sheet1");
     XLSX.writeFile(workbook, name);
     return;
   }
-  const content = type === "json" ? JSON.stringify(rows, null, 2) : type === "xml" ? toXml(rows) : rowsToCsv(rows, type === "tsv" ? "\t" : type === "txt" ? "," : type);
+  const content = type === "json" ? JSON.stringify(rows, null, 2) : type === "xml" ? toXml(rows) : rowsToCsv(rows, textDelimiter, columnsOverride);
   downloadBlob(name, content, type === "json" ? "application/json" : type === "xml" ? "application/xml" : "text/plain;charset=utf-8");
 }
 function downloadBlob(name, content, mime) {
@@ -159,10 +192,10 @@ function downloadBlob(name, content, mime) {
   URL.revokeObjectURL(url);
 }
 function setStatus(id, text, tone = "info") { const el = document.getElementById(id); el.className = `alert alert-${tone}`; el.textContent = text; }
-function renderTable(tableId, rows, limit = 25) {
+function renderTable(tableId, rows, limit = 25, columnsOverride = []) {
   const table = document.getElementById(tableId); const thead = table.querySelector("thead"); const tbody = table.querySelector("tbody");
   thead.innerHTML = ""; tbody.innerHTML = "";
-  const columns = uniqueColumns(rows);
+  const columns = columnsOverride.length ? columnsOverride : uniqueColumns(rows);
   if (!columns.length) return;
   const headerRow = document.createElement("tr"); columns.forEach((column) => { const th = document.createElement("th"); th.textContent = column; headerRow.appendChild(th); }); thead.appendChild(headerRow);
   rows.slice(0, limit).forEach((row) => { const tr = document.createElement("tr"); columns.forEach((column) => { const td = document.createElement("td"); td.textContent = row[column] ?? ""; tr.appendChild(td); }); tbody.appendChild(tr); });
@@ -245,12 +278,20 @@ function applyTransformValue(value, name, params) {
   if (name === "UK Postcode (extract)") { const match = text.toUpperCase().match(/\b([A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2})\b/); return match ? match[1].trim() : ""; }
   if (name === "Address first line (before comma)") return text.split(",").map((part) => part.trim()).find(Boolean) || text.trim();
   if (name === "UK mobile -> 44") { let digits = text.replace(/\s+/g, "").replace(/\.0$/, "").replace(/\D/g, ""); if (!digits) return ""; if (digits.startsWith("44")) return digits; if (digits.startsWith("0")) return `44${digits.slice(1)}`; return `44${digits}`; }
+  if (name === "Digits only") return (text.match(/\d/g) || []).join("");
   if (name === "Digits: keep last N") { const digits = (text.match(/\d/g) || []).join(""); const n = Number(params.n || 4); return digits.length >= n ? digits.slice(-n) : ""; }
   if (name === "Extract by regex") { try { const match = text.match(new RegExp(params.pattern || "", params.ignore_case ? "i" : "")); return match ? (match[Number(params.group || 1)] || "") : ""; } catch { return ""; } }
   if (name === "Split + take part") { const parts = text.split(params.delim || ",").map((part) => part.trim()); let index = Number(params.index || 0); if (index < 0) index = parts.length + index; return parts[index] ?? ""; }
   if (name === "Prefix if missing") { const prefix = String(params.prefix || ""); return prefix && !text.startsWith(prefix) ? `${prefix}${text}` : text; }
   if (name === "Suffix") return `${text}${String(params.suffix || "")}`;
   if (name === "Regex replace") { try { return text.replace(new RegExp(params.pattern || "", params.ignore_case ? "ig" : "g"), params.repl || ""); } catch { return text; } }
+  if (name === "Name: extract title") { const match = text.trim().match(/^(mr|mrs|ms|miss|mx|dr|prof|sir|lady|lord|rev)\.?\s+/i); return match ? match[0].trim().replace(/\.$/, "") : ""; }
+  if (name === "Name: extract surname") {
+    const withoutTitle = text.trim().replace(/^(mr|mrs|ms|miss|mx|dr|prof|sir|lady|lord|rev)\.?\s+/i, "");
+    const parts = withoutTitle.split(/\s+/).filter(Boolean);
+    while (parts.length && /^(jr|sr|ii|iii|iv|v)\.?$/i.test(parts[parts.length - 1])) parts.pop();
+    return parts.length ? parts[parts.length - 1].replace(/,$/, "") : "";
+  }
   return text;
 }
 function outputTemplatePayload() {
@@ -299,6 +340,22 @@ function renderMappingRows() {
   });
   const add = document.createElement("button"); add.className = "btn btn-secondary"; add.type = "button"; add.textContent = "Add Output Column"; add.onclick = () => { state.merge.exportRows.push({ source: "(blank)", transform: "None", params: {}, output_name: "" }); renderMappingRows(); updateExportRows(); }; list.appendChild(add);
 }
+function renderCallerAiMappingRows() {
+  const list = document.getElementById("caller-ai-mapping-list"); list.innerHTML = "";
+  const columns = state.callerAi.columns || [];
+  state.callerAi.exportRows.forEach((row, index) => {
+    const item = document.createElement("div"); item.className = "mapping-row";
+    const sourceOptions = ["(blank)", ...columns].map((column) => `<option value="${escapeHtml(column)}" ${row.source === column ? "selected" : ""}>${escapeHtml(column)}</option>`).join("");
+    const transformOptions = TRANSFORMS.map((name) => `<option value="${escapeHtml(name)}" ${row.transform === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("");
+    item.innerHTML = `<div class="form-group"><label>Source</label><select data-caller-ai-field="source" data-index="${index}">${sourceOptions}</select></div><div class="form-group"><label>Transform</label><select data-caller-ai-field="transform" data-index="${index}">${transformOptions}</select></div><div class="form-group"><label>Output name</label><input value="${escapeHtml(row.output_name || "")}" disabled></div>`;
+    list.appendChild(item);
+    if (["Digits: keep last N", "Extract by regex", "Split + take part", "Prefix if missing", "Suffix", "Regex replace"].includes(row.transform)) {
+      const params = document.createElement("div"); params.className = "form-grid form-grid--three";
+      params.innerHTML = renderCallerAiParamInputs(row, index);
+      list.appendChild(params);
+    }
+  });
+}
 function renderParamInputs(row, index) {
   const p = row.params || {};
   if (row.transform === "Digits: keep last N") return `<div class="form-group"><label>N</label><input data-param="n" data-index="${index}" type="number" value="${Number(p.n || 4)}"></div>`;
@@ -309,24 +366,85 @@ function renderParamInputs(row, index) {
   if (row.transform === "Regex replace") return `<div class="form-group"><label>Pattern</label><input data-param="pattern" data-index="${index}" value="${escapeHtml(p.pattern || "")}"></div><div class="form-group"><label>Replace with</label><input data-param="repl" data-index="${index}" value="${escapeHtml(p.repl || "")}"></div><label class="checkbox inline-checkbox"><input data-param="ignore_case" data-index="${index}" type="checkbox" ${p.ignore_case !== false ? "checked" : ""}><span>Ignore case</span></label>`;
   return "";
 }
+function renderCallerAiParamInputs(row, index) {
+  const p = row.params || {};
+  if (row.transform === "Digits: keep last N") return `<div class="form-group"><label>N</label><input data-caller-ai-param="n" data-index="${index}" type="number" value="${Number(p.n || 4)}"></div>`;
+  if (row.transform === "Extract by regex") return `<div class="form-group"><label>Pattern</label><input data-caller-ai-param="pattern" data-index="${index}" value="${escapeHtml(p.pattern || "")}"></div><div class="form-group"><label>Group</label><input data-caller-ai-param="group" data-index="${index}" type="number" value="${Number(p.group || 1)}"></div><label class="checkbox inline-checkbox"><input data-caller-ai-param="ignore_case" data-index="${index}" type="checkbox" ${p.ignore_case !== false ? "checked" : ""}><span>Ignore case</span></label>`;
+  if (row.transform === "Split + take part") return `<div class="form-group"><label>Delimiter</label><input data-caller-ai-param="delim" data-index="${index}" value="${escapeHtml(p.delim || ",")}"></div><div class="form-group"><label>Index</label><input data-caller-ai-param="index" data-index="${index}" type="number" value="${Number(p.index || 0)}"></div>`;
+  if (row.transform === "Prefix if missing") return `<div class="form-group"><label>Prefix</label><input data-caller-ai-param="prefix" data-index="${index}" value="${escapeHtml(p.prefix || "")}"></div>`;
+  if (row.transform === "Suffix") return `<div class="form-group"><label>Suffix</label><input data-caller-ai-param="suffix" data-index="${index}" value="${escapeHtml(p.suffix || "")}"></div>`;
+  if (row.transform === "Regex replace") return `<div class="form-group"><label>Pattern</label><input data-caller-ai-param="pattern" data-index="${index}" value="${escapeHtml(p.pattern || "")}"></div><div class="form-group"><label>Replace with</label><input data-caller-ai-param="repl" data-index="${index}" value="${escapeHtml(p.repl || "")}"></div><label class="checkbox inline-checkbox"><input data-caller-ai-param="ignore_case" data-index="${index}" type="checkbox" ${p.ignore_case !== false ? "checked" : ""}><span>Ignore case</span></label>`;
+  return "";
+}
 function updateExportRows() {
   state.merge.exportRows = state.merge.exportRows.filter((row) => row.output_name || row.source !== "(blank)");
-  const outputRows = [];
-  state.merge.exportRows.forEach((row) => {
-    if (row.source === "(blank)" || !row.output_name) return;
-    outputRows.push(Object.fromEntries([[row.output_name, null]]));
-  });
+  const outputNames = state.merge.exportRows.map((row) => String(row.output_name || "").trim()).filter(Boolean);
+  const duplicateNames = outputNames.filter((name, index) => outputNames.indexOf(name) !== index);
   const mergedRows = state.merge.mergedRows || [];
+  const previewColumns = [];
+  const missingSources = [];
+  state.merge.exportRows.forEach((row) => {
+    const outputName = String(row.output_name || "").trim();
+    if (!outputName) return;
+    previewColumns.push(outputName);
+    if (row.source !== "(blank)" && !state.merge.mergedColumns.includes(row.source)) missingSources.push(`${outputName} <- ${row.source}`);
+  });
   const exportData = mergedRows.map((mergedRow) => {
     const out = {};
     state.merge.exportRows.forEach((row) => {
-      if (row.source === "(blank)" || !row.output_name) return;
-      out[row.output_name] = applyTransformValue(mergedRow[row.source], row.transform, row.params || {});
+      const outputName = String(row.output_name || "").trim();
+      if (!outputName) return;
+      if (row.source === "(blank)") {
+        out[outputName] = "";
+        return;
+      }
+      if (!state.merge.mergedColumns.includes(row.source)) return;
+      out[outputName] = applyTransformValue(mergedRow[row.source], row.transform, row.params || {});
     });
     return out;
   });
   state.merge.previewRows = exportData;
-  renderTable("merge-table", exportData);
+  state.merge.previewColumns = previewColumns;
+  renderTable("merge-table", exportData, 25, previewColumns);
+  if (duplicateNames.length) {
+    setStatus("export-status", `Output column names must be unique: ${Array.from(new Set(duplicateNames)).join(", ")}`, "danger");
+  } else if (!previewColumns.length) {
+    setStatus("export-status", "No export columns are configured yet. Add at least one output column name, or use '(blank)' to create an empty required column.", "info");
+  } else if (missingSources.length) {
+    setStatus("export-status", `Some mapped source columns were not found after merge: ${missingSources.join(", ")}`, "danger");
+  } else {
+    setStatus("export-status", `Export preview ready: ${exportData.length} row(s), ${previewColumns.length} column(s).`, "info");
+  }
+}
+function updateCallerAiExportRows() {
+  const previewColumns = CALLER_AI_REQUIRED_COLUMNS.slice();
+  const missingSources = [];
+  const exportData = (state.callerAi.rows || []).map((sourceRow) => {
+    const out = {};
+    state.callerAi.exportRows.forEach((row) => {
+      if (row.source === "(blank)") {
+        out[row.output_name] = "";
+        return;
+      }
+      if (!state.callerAi.columns.includes(row.source)) {
+        missingSources.push(`${row.output_name} <- ${row.source}`);
+        out[row.output_name] = "";
+        return;
+      }
+      out[row.output_name] = applyTransformValue(sourceRow[row.source], row.transform, row.params || {});
+    });
+    return out;
+  });
+  state.callerAi.previewRows = exportData;
+  state.callerAi.previewColumns = previewColumns;
+  renderTable("caller-ai-table", exportData, 25, previewColumns);
+  if (!state.callerAi.rows.length) {
+    setStatus("caller-ai-export-status", "Preview will appear after the file is parsed.", "info");
+  } else if (missingSources.length) {
+    setStatus("caller-ai-export-status", `Some Caller AI source columns were not found: ${Array.from(new Set(missingSources)).join(", ")}`, "danger");
+  } else {
+    setStatus("caller-ai-export-status", `Caller AI CSV ready: ${exportData.length} row(s), ${previewColumns.length} column(s).`, "info");
+  }
 }
 function escapeHtml(value) {
   return String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;");
@@ -360,9 +478,33 @@ async function handleSimpleFile() {
     setStatus("simple-status", `${file.name}: ${parsed.rows.length} rows loaded.`, "info");
   } catch (error) { setStatus("simple-status", error.message, "danger"); }
 }
+async function handleCallerAiFile() {
+  const file = document.getElementById("caller-ai-file").files[0];
+  if (!file) return;
+  try {
+    const parsed = await parseFile(file, { delimiter: document.getElementById("caller-ai-delimiter").value, headerRow: document.getElementById("caller-ai-header-row").value });
+    const columns = uniqueColumns(parsed.rows);
+    state.callerAi = {
+      file,
+      rows: parsed.rows,
+      columns,
+      exportRows: buildCallerAiOutputSpec(columns),
+      previewRows: [],
+      previewColumns: CALLER_AI_REQUIRED_COLUMNS.slice(),
+      parsedName: `${safeFilename(file.name.replace(/\.[^.]+$/, ""))}_caller_ai`
+    };
+    renderCallerAiMappingRows();
+    renderTable("caller-ai-source-table", parsed.rows);
+    updateCallerAiExportRows();
+    setStatus("caller-ai-status", `${file.name}: ${parsed.rows.length} rows loaded.`, "info");
+  } catch (error) {
+    setStatus("caller-ai-status", error.message, "danger");
+  }
+}
 function switchMode(mode) {
   state.mode = mode;
   document.getElementById("simple-mode").classList.toggle("hidden", mode !== "simple");
+  document.getElementById("caller-ai-mode").classList.toggle("hidden", mode !== "caller-ai");
   document.getElementById("merge-mode").classList.toggle("hidden", mode !== "merge");
   document.querySelectorAll(".mode-tab").forEach((button) => {
     const active = button.dataset.mode === mode;
@@ -420,12 +562,24 @@ function bindEvents() {
     if (!state.simple.rows.length) return;
     exportRows(state.simple.rows, state.simple.parsedName, document.getElementById("simple-output-type").value);
   });
+  document.getElementById("caller-ai-file").addEventListener("change", handleCallerAiFile);
+  document.getElementById("caller-ai-download").addEventListener("click", () => {
+    if (!state.callerAi.previewColumns.length) {
+      setStatus("caller-ai-export-status", "There is no Caller AI CSV to download yet.", "danger");
+      return;
+    }
+    exportRows(state.callerAi.previewRows || [], state.callerAi.parsedName || "caller_ai", "csv", CALLER_AI_REQUIRED_COLUMNS);
+  });
   document.getElementById("merge-files").addEventListener("change", handleMergeFiles);
   document.getElementById("run-merge").addEventListener("click", runMerge);
   document.getElementById("build-output-rows").addEventListener("click", () => buildDefaultOutputRows(document.getElementById("output-columns-count").value));
   document.getElementById("download-merged").addEventListener("click", () => {
-    if (!state.merge.previewRows?.length) return;
-    exportRows(state.merge.previewRows, document.getElementById("merge-export-name").value || "merged_output", document.getElementById("merge-output-type").value);
+    const outputNames = state.merge.previewColumns || [];
+    if (!outputNames.length) {
+      setStatus("export-status", "There are no export columns to download yet.", "danger");
+      return;
+    }
+    exportRows(state.merge.previewRows || [], document.getElementById("merge-export-name").value || "merged_output", document.getElementById("merge-output-type").value, outputNames);
   });
   document.getElementById("download-template").addEventListener("click", () => downloadBlob("mapping_template.json", JSON.stringify(outputTemplatePayload(), null, 2), "application/json"));
   document.getElementById("download-unmatched").addEventListener("click", downloadUnmatchedZip);
@@ -435,7 +589,7 @@ function bindEvents() {
       const template = JSON.parse(await file.text());
       state.merge.template = template;
       document.getElementById("join-type").value = template.join_type || "left";
-      state.merge.exportRows = (template.output_spec || []).map((row) => ({ source: row.source || "(blank)", transform: row.transform || "None", params: row.params || {}, output_name: row.output_name || "" }));
+      state.merge.exportRows = (template.output_spec || []).map((row) => ({ source: row.source || "(blank)", transform: normaliseTransformName(row.transform), params: row.params || {}, output_name: row.output_name || "" }));
       state.merge.files.forEach((entry) => {
         entry.keyCols = template.merge_keys_by_role?.[entry.role] || entry.keyCols;
         entry.duplicateStrategy = template.duplicate_strategy_by_role?.[entry.role] || entry.duplicateStrategy;
@@ -453,9 +607,15 @@ function bindEvents() {
     }
     if (target.matches("[data-field]")) {
       const row = state.merge.exportRows[Number(target.dataset.index)];
-      row[target.dataset.field] = target.value;
+      row[target.dataset.field] = target.dataset.field === "transform" ? normaliseTransformName(target.value) : target.value;
       if (target.dataset.field === "transform") row.params = getTransformParams(target.value);
       renderMappingRows(); updateExportRows();
+    }
+    if (target.matches("[data-caller-ai-field]")) {
+      const row = state.callerAi.exportRows[Number(target.dataset.index)];
+      row[target.dataset.callerAiField] = target.dataset.callerAiField === "transform" ? normaliseTransformName(target.value) : target.value;
+      if (target.dataset.callerAiField === "transform") row.params = getTransformParams(target.value);
+      renderCallerAiMappingRows(); updateCallerAiExportRows();
     }
     if (target.matches("[data-param]")) {
       const row = state.merge.exportRows[Number(target.dataset.index)];
@@ -463,12 +623,21 @@ function bindEvents() {
       row.params[target.dataset.param] = target.type === "checkbox" ? target.checked : target.value;
       updateExportRows();
     }
+    if (target.matches("[data-caller-ai-param]")) {
+      const row = state.callerAi.exportRows[Number(target.dataset.index)];
+      row.params ||= {};
+      row.params[target.dataset.callerAiParam] = target.type === "checkbox" ? target.checked : target.value;
+      updateCallerAiExportRows();
+    }
   });
   document.addEventListener("change", (event) => {
     const target = event.target;
     if (target.matches("select[data-file-field='duplicateStrategy']")) state.merge.files[Number(target.dataset.index)].duplicateStrategy = target.value;
     if (target.matches("[data-param]") && target.type === "checkbox") {
       const row = state.merge.exportRows[Number(target.dataset.index)]; row.params ||= {}; row.params[target.dataset.param] = target.checked; updateExportRows();
+    }
+    if (target.matches("[data-caller-ai-param]") && target.type === "checkbox") {
+      const row = state.callerAi.exportRows[Number(target.dataset.index)]; row.params ||= {}; row.params[target.dataset.callerAiParam] = target.checked; updateCallerAiExportRows();
     }
   });
   document.addEventListener("click", (event) => {

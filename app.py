@@ -24,8 +24,9 @@ from data_io import (
     to_export_bytes,
 )
 from merge_utils import merge_dataframes, parse_merge_key_columns
+from mapping_utils import CALLER_AI_REQUIRED_COLUMNS, build_caller_ai_output_spec, build_export_dataframe
 from template_utils import apply_template_to_defaults, build_template_payload
-from transforms import TRANSFORM_FUNCS, apply_transform
+from transforms import TRANSFORM_FUNCS
 
 
 APP_TITLE = "Data Mapper"
@@ -186,13 +187,14 @@ st.markdown(
 Upload tabular files and either:
 
 - **Convert** a single file between CSV, TSV, TXT, XLSX, JSON, XML, and Parquet
+- **Caller AI** map a single file into a Caller AI-ready CSV schema
 - **Merge + Map + Transform** multiple uploads with diagnostics, composite keys, duplicate strategies, and audit exports
 """
 )
 
 with st.sidebar:
     st.header("Mode")
-    app_mode = st.radio("Choose workflow", options=["Simple Convert", "Merge + Map + Transform"], index=0)
+    app_mode = st.radio("Choose workflow", options=["Simple Convert", "Caller AI", "Merge + Map + Transform"], index=0)
 
     st.divider()
     st.header("General options")
@@ -343,6 +345,171 @@ if app_mode == "Simple Convert":
         )
     except Exception as exc:
         st.error(f"Failed to create export. Error: {exc}")
+    st.stop()
+
+
+if app_mode == "Caller AI":
+    uploaded = st.file_uploader(
+        "Upload a file for Caller AI",
+        type=SUPPORTED_INPUT_TYPES,
+        help="Produces a Caller AI-ready CSV with Name, PhoneNumber, CardNumber, DateOfBirth, PostalCode, Title, and Surname.",
+        key="caller_ai_upload",
+    )
+    if not uploaded:
+        st.info("Upload a file to build a Caller AI CSV.")
+        st.stop()
+
+    try:
+        parsed = parse_file_with_ui(
+            uploaded,
+            header_row_default=int(header_row),
+            formula_mode=formula_mode,
+            drop_empty=drop_empty,
+            force_text_cols=force_text_cols,
+            key_prefix="caller_ai",
+        )
+    except Exception as exc:
+        st.error(f"Failed to read '{uploaded.name}'. Error: {exc}")
+        st.stop()
+
+    caller_ai_defaults = build_caller_ai_output_spec(list(parsed["df"].columns))
+    st.subheader("Caller AI Mapping")
+    st.caption("Required output columns: " + ", ".join(CALLER_AI_REQUIRED_COLUMNS))
+
+    out_rows: List[Dict[str, Any]] = []
+    all_cols = list(parsed["df"].columns)
+    for idx, defaults in enumerate(caller_ai_defaults):
+        default_src = str(defaults.get("source", "(blank)"))
+        default_transform = str(defaults.get("transform", "None"))
+        default_params = dict(defaults.get("params", {}) or {})
+        output_name = str(defaults["output_name"])
+
+        col1, col2, col3 = st.columns([3, 2, 3])
+        with col1:
+            src = st.selectbox(
+                f"Source for {output_name}",
+                options=["(blank)"] + all_cols,
+                index=(["(blank)"] + all_cols).index(default_src) if default_src in (["(blank)"] + all_cols) else 0,
+                key=f"caller_ai_src_{idx}",
+            )
+        with col2:
+            tf_name = st.selectbox(
+                f"Transform for {output_name}",
+                options=list(TRANSFORM_FUNCS.keys()),
+                index=list(TRANSFORM_FUNCS.keys()).index(default_transform) if default_transform in TRANSFORM_FUNCS else 0,
+                key=f"caller_ai_tf_{idx}",
+            )
+        with col3:
+            st.text_input(
+                f"Output column {idx + 1}",
+                value=output_name,
+                disabled=True,
+                key=f"caller_ai_out_{idx}",
+            )
+
+        params: Dict[str, Any] = {}
+        if tf_name == "Digits: keep last N":
+            params["n"] = st.number_input(
+                f"N for {output_name}",
+                min_value=1,
+                max_value=50,
+                value=int(default_params.get("n", 4)),
+                step=1,
+                key=f"caller_ai_n_{idx}",
+            )
+        elif tf_name == "Extract by regex":
+            params["pattern"] = st.text_input(
+                f"Regex pattern for {output_name}",
+                value=str(default_params.get("pattern", r"(\w+)")),
+                key=f"caller_ai_rx_{idx}",
+            )
+            params["group"] = st.number_input(
+                f"Regex group for {output_name}",
+                min_value=0,
+                max_value=20,
+                value=int(default_params.get("group", 1)),
+                step=1,
+                key=f"caller_ai_grp_{idx}",
+            )
+            params["ignore_case"] = st.checkbox(
+                f"Ignore case for {output_name}",
+                value=bool(default_params.get("ignore_case", True)),
+                key=f"caller_ai_ic_{idx}",
+            )
+        elif tf_name == "Split + take part":
+            params["delim"] = st.text_input(
+                f"Delimiter for {output_name}",
+                value=str(default_params.get("delim", ",")),
+                key=f"caller_ai_delim_{idx}",
+            )
+            params["index"] = st.number_input(
+                f"Index for {output_name}",
+                min_value=-50,
+                max_value=50,
+                value=int(default_params.get("index", 0)),
+                step=1,
+                key=f"caller_ai_idx_{idx}",
+            )
+        elif tf_name == "Prefix if missing":
+            params["prefix"] = st.text_input(
+                f"Prefix for {output_name}",
+                value=str(default_params.get("prefix", "")),
+                key=f"caller_ai_pre_{idx}",
+            )
+        elif tf_name == "Suffix":
+            params["suffix"] = st.text_input(
+                f"Suffix for {output_name}",
+                value=str(default_params.get("suffix", "")),
+                key=f"caller_ai_suf_{idx}",
+            )
+        elif tf_name == "Regex replace":
+            params["pattern"] = st.text_input(
+                f"Regex replace pattern for {output_name}",
+                value=str(default_params.get("pattern", r"\s+")),
+                key=f"caller_ai_rrx_{idx}",
+            )
+            params["repl"] = st.text_input(
+                f"Replace with for {output_name}",
+                value=str(default_params.get("repl", "")),
+                key=f"caller_ai_rrepl_{idx}",
+            )
+            params["ignore_case"] = st.checkbox(
+                f"Ignore case replace for {output_name}",
+                value=bool(default_params.get("ignore_case", True)),
+                key=f"caller_ai_ric_{idx}",
+            )
+
+        out_rows.append({"source": src, "transform": tf_name, "params": params, "output_name": output_name})
+
+    export_df, missing_sources = build_export_dataframe(parsed["df"], out_rows)
+    if missing_sources:
+        st.warning("Some Caller AI source columns were not found: " + ", ".join(missing_sources))
+
+    st.subheader("Source Preview")
+    st.caption(f"Rows: {len(parsed['df']):,} | Columns: {parsed['df'].shape[1]:,}")
+    st.dataframe(parsed["df"].head(preview_rows), use_container_width=True)
+
+    st.subheader("Caller AI CSV Preview")
+    st.caption(f"Rows: {len(export_df):,} | Columns: {export_df.shape[1]:,}")
+    st.dataframe(export_df.head(preview_rows), use_container_width=True)
+
+    try:
+        render_download_button(
+            df=export_df,
+            base_name=f"{safe_filename(uploaded.name.rsplit('.', 1)[0])}_caller_ai",
+            output_type="csv",
+            delimiter=",",
+            encoding=encoding_map[encoding_label],
+            quoting=quoting,
+            escapechar_enabled=escapechar_enabled,
+            date_format=date_format,
+            json_orient="records",
+            xml_root="rows",
+            xml_row="row",
+            label_prefix="Download Caller AI",
+        )
+    except Exception as exc:
+        st.error(f"Failed to create Caller AI CSV. Error: {exc}")
     st.stop()
 
 
@@ -532,11 +699,11 @@ if duplicate_outputs:
     st.error("Output column names must be unique: " + ", ".join(duplicate_outputs))
     st.stop()
 
-export_df = pd.DataFrame()
-for row in out_rows:
-    if row["source"] == "(blank)" or not row["output_name"] or row["source"] not in merged.columns:
-        continue
-    export_df[row["output_name"]] = apply_transform(merged[row["source"]], row["transform"], row["params"])
+export_df, missing_sources = build_export_dataframe(merged, out_rows)
+if missing_sources:
+    st.warning("Some mapped source columns were not found after merge: " + ", ".join(missing_sources))
+if export_df.shape[1] == 0:
+    st.warning("No export columns are configured. Add at least one output column name, or use '(blank)' to create an empty required column.")
 
 st.subheader("Export preview")
 st.caption(f"Rows: {len(export_df):,} | Columns: {export_df.shape[1]:,}")

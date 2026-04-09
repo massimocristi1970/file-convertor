@@ -19,6 +19,7 @@
           </div>
           <div class="inline-actions mode-switch">
             <button class="btn mode-tab active" data-mode="simple" type="button">Simple Convert</button>
+            <button class="btn btn-secondary mode-tab" data-mode="caller-ai" type="button">Caller AI</button>
             <button class="btn btn-secondary mode-tab" data-mode="merge" type="button">Merge + Map + Transform</button>
           </div>
         </div>
@@ -73,6 +74,81 @@
           </div>
           <div class="table-wrap">
             <table id="simple-table">
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="card stack hidden" id="caller-ai-mode">
+        <div class="section-header">
+          <div>
+            <h2>Caller AI</h2>
+            <p>Upload one file and map it into the required Caller AI CSV columns.</p>
+          </div>
+        </div>
+        <div class="form-grid form-grid--two">
+          <div class="form-group">
+            <label for="caller-ai-file">File</label>
+            <input id="caller-ai-file" type="file" accept=".xlsx,.csv,.tsv,.txt,.json,.xml">
+          </div>
+          <div class="form-group">
+            <label>Required output</label>
+            <input type="text" value="Name, PhoneNumber, CardNumber, DateOfBirth, PostalCode, Title, Surname" disabled>
+          </div>
+          <div class="form-group text-settings">
+            <label for="caller-ai-delimiter">Text delimiter</label>
+            <select id="caller-ai-delimiter">
+              <option value="auto">Auto-detect</option>
+              <option value=",">Comma</option>
+              <option value=";">Semicolon</option>
+              <option value="\t">Tab</option>
+              <option value="|">Pipe</option>
+            </select>
+          </div>
+          <div class="form-group text-settings">
+            <label for="caller-ai-header-row">Header row</label>
+            <input id="caller-ai-header-row" type="number" min="1" value="1">
+          </div>
+        </div>
+        <div class="alert alert-info" id="caller-ai-status">Upload a file to build a Caller AI CSV.</div>
+
+        <div class="card inner-card stack">
+          <div class="section-header">
+            <div>
+              <h3>Output Mapping</h3>
+            </div>
+          </div>
+          <div class="mapping-list stack" id="caller-ai-mapping-list"></div>
+        </div>
+
+        <div class="card table-card inner-card">
+          <div class="section-header">
+            <div>
+              <h3>Source Preview</h3>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table id="caller-ai-source-table">
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card inner-card stack">
+          <div class="section-header">
+            <div>
+              <h3>Caller AI CSV Preview</h3>
+            </div>
+          </div>
+          <div class="inline-actions">
+            <button class="btn" id="caller-ai-download" type="button">Download Caller AI CSV</button>
+          </div>
+          <div class="alert alert-info" id="caller-ai-export-status">Preview will appear after the file is parsed.</div>
+          <div class="table-wrap">
+            <table id="caller-ai-table">
               <thead></thead>
               <tbody></tbody>
             </table>
@@ -164,6 +240,7 @@
           <div class="inline-actions">
             <button class="btn" id="download-merged" type="button">Download Output</button>
           </div>
+          <div class="alert alert-info" id="export-status">Run a merge and configure output columns to preview the export.</div>
           <div class="table-wrap">
             <table id="merge-table">
               <thead></thead>

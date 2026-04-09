@@ -5,6 +5,8 @@ import pandas as pd
 
 
 POSTCODE_RE = re.compile(r"\b([A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2})\b", flags=re.IGNORECASE)
+TITLE_RE = re.compile(r"^(mr|mrs|ms|miss|mx|dr|prof|sir|lady|lord|rev)\.?\s+", flags=re.IGNORECASE)
+SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}
 
 
 def _as_str(x: Any) -> str:
@@ -47,6 +49,10 @@ def tf_uk_mobile_add44(x: str, p: Dict[str, Any]) -> str:
     if digits.startswith("0"):
         return "44" + digits[1:]
     return "44" + digits
+
+
+def tf_digits_only(x: str, p: Dict[str, Any]) -> str:
+    return "".join(re.findall(r"\d", x))
 
 
 def tf_digits_last_n(x: str, p: Dict[str, Any]) -> str:
@@ -99,18 +105,40 @@ def tf_regex_replace(x: str, p: Dict[str, Any]) -> str:
     return re.sub(pattern, replacement, x, flags=flags)
 
 
+def tf_name_title(x: str, p: Dict[str, Any]) -> str:
+    s = x.strip()
+    if not s:
+        return ""
+    match = TITLE_RE.match(s)
+    return match.group(0).strip().rstrip(".") if match else ""
+
+
+def tf_name_surname(x: str, p: Dict[str, Any]) -> str:
+    s = TITLE_RE.sub("", x.strip())
+    if not s:
+        return ""
+    tokens = [token for token in re.split(r"\s+", s) if token]
+    while tokens and tokens[-1].rstrip(".").lower() in SUFFIXES:
+        tokens.pop()
+    return tokens[-1].strip(",") if tokens else ""
+
+
 TRANSFORM_FUNCS = {
     "None": tf_none,
     "Text (force)": tf_text_force,
     "UK Postcode (extract)": tf_uk_postcode,
     "Address first line (before comma)": tf_first_line,
     "UK mobile → 44": tf_uk_mobile_add44,
+    "UK mobile -> 44": tf_uk_mobile_add44,
+    "Digits only": tf_digits_only,
     "Digits: keep last N": tf_digits_last_n,
     "Extract by regex": tf_extract_regex,
     "Split + take part": tf_split_take,
     "Prefix if missing": tf_prefix_if_missing,
     "Suffix": tf_suffix,
     "Regex replace": tf_regex_replace,
+    "Name: extract title": tf_name_title,
+    "Name: extract surname": tf_name_surname,
 }
 
 
