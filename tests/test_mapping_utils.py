@@ -14,6 +14,8 @@ class MappingUtilsTests(unittest.TestCase):
         self.assertEqual(spec[1]["transform"], "UK mobile -> 44")
         self.assertEqual(spec[2]["transform"], "Digits: keep last N")
         self.assertEqual(spec[2]["params"], {"n": 4})
+        self.assertEqual(spec[3]["transform"], "Date: format")
+        self.assertEqual(spec[3]["params"], {"format": "%Y-%m-%d"})
         self.assertEqual(spec[4]["transform"], "UK Postcode (extract)")
         self.assertEqual(spec[5]["transform"], "Name: extract title")
         self.assertEqual(spec[6]["transform"], "Name: extract surname")
@@ -48,6 +50,10 @@ class MappingUtilsTests(unittest.TestCase):
         )
         self.assertEqual(missing, [])
         self.assertEqual(export_df.iloc[0]["PostalCode"], "SW1A 2AA")
+
+    def test_date_transform_converts_excel_serials(self) -> None:
+        series = pd.Series(["33115"])
+        self.assertEqual(apply_transform(series, "Date: format", {"format": "%Y-%m-%d"}).iloc[0], "1990-08-30")
 
     def test_name_transforms_extract_first_title_and_surname(self) -> None:
         series = pd.Series(["Dr Ada Lovelace"])

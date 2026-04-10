@@ -1,6 +1,6 @@
 const INPUT_TYPES = ["xlsx", "csv", "tsv", "txt", "json", "xml"];
 const OUTPUT_TYPES = ["csv", "tsv", "txt", "xlsx", "json", "xml"];
-const TRANSFORMS = ["None", "Text (force)", "UK Postcode (extract)", "Address first line (before comma)", "UK mobile -> 44", "Digits only", "Digits: keep last N", "Extract by regex", "Split + take part", "Prefix if missing", "Suffix", "Regex replace", "Name: extract first", "Name: extract title", "Name: extract surname"];
+const TRANSFORMS = ["None", "Text (force)", "UK Postcode (extract)", "Address first line (before comma)", "UK mobile -> 44", "Digits only", "Digits: keep last N", "Extract by regex", "Split + take part", "Prefix if missing", "Suffix", "Regex replace", "Date: format", "Name: extract first", "Name: extract title", "Name: extract surname"];
 const CALLER_AI_REQUIRED_COLUMNS = ["Name", "PhoneNumber", "CardNumber", "DateOfBirth", "PostalCode", "Title", "Surname"];
 const state = {
   mode: "simple",
@@ -52,7 +52,7 @@ function buildCallerAiOutputSpec(columns) {
     { source: nameSource || "(blank)", transform: "Name: extract first", params: {}, output_name: "Name" },
     { source: phoneSource || "(blank)", transform: "UK mobile -> 44", params: {}, output_name: "PhoneNumber" },
     { source: cardSource || "(blank)", transform: "Digits: keep last N", params: { n: 4 }, output_name: "CardNumber" },
-    { source: dobSource || "(blank)", transform: "None", params: {}, output_name: "DateOfBirth" },
+    { source: dobSource || "(blank)", transform: "Date: format", params: { format: "%Y-%m-%d" }, output_name: "DateOfBirth" },
     { source: postcodeSource || "(blank)", transform: "UK Postcode (extract)", params: { fallback_sources: postcodeCandidates.slice(1) }, output_name: "PostalCode" },
     { source: titleSource || "(blank)", transform: "Name: extract title", params: {}, output_name: "Title" },
     { source: surnameSource || "(blank)", transform: "Name: extract surname", params: {}, output_name: "Surname" }
@@ -278,7 +278,32 @@ function getTransformParams(name) {
   if (name === "Prefix if missing") return { prefix: "" };
   if (name === "Suffix") return { suffix: "" };
   if (name === "Regex replace") return { pattern: "\\s+", repl: "", ignore_case: true };
+  if (name === "Date: format") return { format: "%Y-%m-%d" };
   return {};
+}
+function pad2(value) { return String(value).padStart(2, "0"); }
+function formatDateParts(date, outputFormat) {
+  const yyyy = String(date.getUTCFullYear());
+  const mm = pad2(date.getUTCMonth() + 1);
+  const dd = pad2(date.getUTCDate());
+  return String(outputFormat || "%Y-%m-%d").replace(/%Y/g, yyyy).replace(/%m/g, mm).replace(/%d/g, dd);
+}
+function formatDateValue(value, outputFormat = "%Y-%m-%d") {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+  if (/^\d+(?:\.0+)?$/.test(text)) {
+    const serial = Number(text);
+    if (serial >= 1 && serial <= 60000) {
+      return formatDateParts(new Date(Date.UTC(1899, 11, 30) + serial * 86400000), outputFormat);
+    }
+  }
+  const slashMatch = text.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/);
+  if (slashMatch) {
+    const year = slashMatch[3].length === 2 ? Number(`20${slashMatch[3]}`) : Number(slashMatch[3]);
+    return formatDateParts(new Date(Date.UTC(year, Number(slashMatch[2]) - 1, Number(slashMatch[1]))), outputFormat);
+  }
+  const parsed = new Date(text);
+  return Number.isNaN(parsed.getTime()) ? text : formatDateParts(parsed, outputFormat);
 }
 function applyTransformValue(value, name, params) {
   const text = String(value ?? "");
@@ -293,6 +318,7 @@ function applyTransformValue(value, name, params) {
   if (name === "Prefix if missing") { const prefix = String(params.prefix || ""); return prefix && !text.startsWith(prefix) ? `${prefix}${text}` : text; }
   if (name === "Suffix") return `${text}${String(params.suffix || "")}`;
   if (name === "Regex replace") { try { return text.replace(new RegExp(params.pattern || "", params.ignore_case ? "ig" : "g"), params.repl || ""); } catch { return text; } }
+  if (name === "Date: format") return formatDateValue(text, params.format || "%Y-%m-%d");
   if (name === "Name: extract first") {
     const withoutTitle = text.trim().replace(/^(mr|mrs|ms|miss|mx|dr|prof|sir|lady|lord|rev)\.?\s+/i, "");
     const parts = withoutTitle.split(/\s+/).filter(Boolean);

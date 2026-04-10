@@ -49,7 +49,7 @@ def build_caller_ai_output_spec(columns: List[str]) -> List[Dict[str, Any]]:
         {"source": name_source or "(blank)", "transform": "Name: extract first", "params": {}, "output_name": "Name"},
         {"source": phone_source or "(blank)", "transform": "UK mobile -> 44", "params": {}, "output_name": "PhoneNumber"},
         {"source": card_source or "(blank)", "transform": "Digits: keep last N", "params": {"n": 4}, "output_name": "CardNumber"},
-        {"source": dob_source or "(blank)", "transform": "None", "params": {}, "output_name": "DateOfBirth"},
+        {"source": dob_source or "(blank)", "transform": "Date: format", "params": {"format": "%Y-%m-%d"}, "output_name": "DateOfBirth"},
         {
             "source": postcode_source or "(blank)",
             "transform": "UK Postcode (extract)",

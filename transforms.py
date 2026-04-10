@@ -105,6 +105,25 @@ def tf_regex_replace(x: str, p: Dict[str, Any]) -> str:
     return re.sub(pattern, replacement, x, flags=flags)
 
 
+def tf_date_format(x: str, p: Dict[str, Any]) -> str:
+    s = x.strip()
+    if not s:
+        return ""
+    output_format = str(p.get("format", "%Y-%m-%d") or "%Y-%m-%d")
+    serial_match = re.fullmatch(r"\d+(?:\.0+)?", s)
+    if serial_match:
+        try:
+            serial = float(s)
+            if 1 <= serial <= 60000:
+                return pd.to_datetime(serial, unit="D", origin="1899-12-30").strftime(output_format)
+        except Exception:
+            pass
+    parsed = pd.to_datetime(s, dayfirst=True, errors="coerce")
+    if pd.isna(parsed):
+        return s
+    return parsed.strftime(output_format)
+
+
 def tf_name_title(x: str, p: Dict[str, Any]) -> str:
     s = x.strip()
     if not s:
@@ -148,6 +167,7 @@ TRANSFORM_FUNCS = {
     "Prefix if missing": tf_prefix_if_missing,
     "Suffix": tf_suffix,
     "Regex replace": tf_regex_replace,
+    "Date: format": tf_date_format,
     "Name: extract first": tf_name_first,
     "Name: extract title": tf_name_title,
     "Name: extract surname": tf_name_surname,
