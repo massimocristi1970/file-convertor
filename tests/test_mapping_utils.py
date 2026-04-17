@@ -33,6 +33,19 @@ class MappingUtilsTests(unittest.TestCase):
         self.assertEqual(list(export_df.columns), ["Title", "Surname"])
         self.assertEqual(export_df.iloc[0].to_dict(), {"Title": "", "Surname": "Lovelace"})
 
+    def test_build_export_dataframe_fills_dummy_card_numbers_when_source_is_blank(self) -> None:
+        source = pd.DataFrame([{"Name": "Ada Lovelace"}, {"Name": "Alan Turing"}, {"Name": "Grace Hopper"}])
+        export_df, missing = build_export_dataframe(
+            source,
+            [{"source": "(blank)", "transform": "Digits: keep last N", "params": {"n": 4}, "output_name": "CardNumber"}],
+        )
+        self.assertEqual(missing, [])
+        self.assertEqual(list(export_df.columns), ["CardNumber"])
+        values = export_df["CardNumber"].tolist()
+        self.assertEqual(len(values), 3)
+        for value in values:
+            self.assertRegex(value, r"^\d{4}$")
+
     def test_build_export_dataframe_reports_missing_sources(self) -> None:
         source = pd.DataFrame([{"Name": "Ada Lovelace"}])
         export_df, missing = build_export_dataframe(

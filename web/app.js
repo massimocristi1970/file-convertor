@@ -2,6 +2,10 @@ const INPUT_TYPES = ["xlsx", "csv", "tsv", "txt", "json", "xml"];
 const OUTPUT_TYPES = ["csv", "tsv", "txt", "xlsx", "json", "xml"];
 const TRANSFORMS = ["None", "Text (force)", "UK Postcode (extract)", "Address first line (before comma)", "UK mobile -> 44", "Digits only", "Digits: keep last N", "Extract by regex", "Split + take part", "Prefix if missing", "Suffix", "Regex replace", "Date: format", "Name: extract first", "Name: extract title", "Name: extract surname"];
 const CALLER_AI_REQUIRED_COLUMNS = ["Name", "PhoneNumber", "CardNumber", "DateOfBirth", "PostalCode", "Title", "Surname"];
+const DUMMY_CARD_OUTPUT_NAMES = new Set(["CardNumber"]);
+function dummyCardNumber() {
+  return String(Math.floor(Math.random() * 10000)).padStart(4, "0");
+}
 const state = {
   mode: "simple",
   simple: { file: null, rows: [], columns: [], fileType: null, parsedName: "output" },
@@ -439,7 +443,7 @@ function updateExportRows() {
       const outputName = String(row.output_name || "").trim();
       if (!outputName) return;
       if (row.source === "(blank)") {
-        out[outputName] = "";
+        out[outputName] = DUMMY_CARD_OUTPUT_NAMES.has(outputName) ? dummyCardNumber() : "";
         return;
       }
       if (!state.merge.mergedColumns.includes(row.source)) return;
@@ -467,7 +471,7 @@ function updateCallerAiExportRows() {
     const out = {};
     state.callerAi.exportRows.forEach((row) => {
       if (row.source === "(blank)") {
-        out[row.output_name] = "";
+        out[row.output_name] = DUMMY_CARD_OUTPUT_NAMES.has(row.output_name) ? dummyCardNumber() : "";
         return;
       }
       const fallbackSources = Array.isArray(row.params?.fallback_sources) ? row.params.fallback_sources : [];
@@ -493,10 +497,13 @@ function updateCallerAiExportRows() {
   state.callerAi.previewRows = exportData;
   state.callerAi.previewColumns = previewColumns;
   renderTable("caller-ai-table", exportData, 25, previewColumns);
+  const dummyCardUsed = state.callerAi.exportRows.some((row) => row.output_name === "CardNumber" && row.source === "(blank)");
   if (!state.callerAi.rows.length) {
     setStatus("caller-ai-export-status", "Preview will appear after the file is parsed.", "info");
   } else if (missingSources.length) {
     setStatus("caller-ai-export-status", `Some Caller AI source columns were not found: ${Array.from(new Set(missingSources)).join(", ")}`, "danger");
+  } else if (dummyCardUsed) {
+    setStatus("caller-ai-export-status", `Caller AI CSV ready: ${exportData.length} row(s), ${previewColumns.length} column(s). No card number column was detected, so CardNumber has been filled with random 4-digit dummy values.`, "info");
   } else {
     setStatus("caller-ai-export-status", `Caller AI CSV ready: ${exportData.length} row(s), ${previewColumns.length} column(s).`, "info");
   }

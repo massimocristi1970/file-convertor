@@ -1,3 +1,4 @@
+import random
 import re
 from typing import Any, Dict, List, Tuple
 
@@ -7,6 +8,12 @@ from transforms import apply_transform
 
 
 CALLER_AI_REQUIRED_COLUMNS = ["Name", "PhoneNumber", "CardNumber", "DateOfBirth", "PostalCode", "Title", "Surname"]
+DUMMY_CARD_OUTPUT_NAMES = {"CardNumber"}
+
+
+def _dummy_card_numbers(count: int) -> List[str]:
+    """Generate a list of random 4-digit numeric strings (zero padded)."""
+    return [f"{random.randint(0, 9999):04d}" for _ in range(count)]
 
 
 def _normalise_label(value: str) -> str:
@@ -74,7 +81,10 @@ def build_export_dataframe(source_df: pd.DataFrame, out_rows: List[Dict[str, Any
         if not output_name:
             continue
         if source == "(blank)":
-            export_df[output_name] = ""
+            if output_name in DUMMY_CARD_OUTPUT_NAMES:
+                export_df[output_name] = _dummy_card_numbers(len(source_df.index))
+            else:
+                export_df[output_name] = ""
             continue
         fallback_sources = [candidate for candidate in params.get("fallback_sources", []) if isinstance(candidate, str)]
         candidate_sources = [source] + [candidate for candidate in fallback_sources if candidate != source]

@@ -484,6 +484,9 @@ if app_mode == "Caller AI":
     export_df, missing_sources = build_export_dataframe(parsed["df"], out_rows)
     if missing_sources:
         st.warning("Some Caller AI source columns were not found: " + ", ".join(missing_sources))
+    dummy_card_rows = [row for row in out_rows if row.get("output_name") == "CardNumber" and row.get("source", "(blank)") == "(blank)"]
+    if dummy_card_rows:
+        st.info("No card number column was detected in the uploaded file. CardNumber has been filled with random 4-digit dummy values so the file is accepted downstream.")
 
     st.subheader("Source Preview")
     st.caption(f"Rows: {len(parsed['df']):,} | Columns: {parsed['df'].shape[1]:,}")
