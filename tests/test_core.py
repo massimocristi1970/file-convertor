@@ -13,7 +13,7 @@ from data_io import (
     to_export_bytes,
     to_xml_bytes,
 )
-from merge_utils import build_composite_key, merge_dataframes
+from merge_utils import build_composite_key, combine_dataframes, merge_dataframes
 
 
 class CoreTests(unittest.TestCase):
@@ -52,6 +52,57 @@ class CoreTests(unittest.TestCase):
         merged = result["merged"]
         self.assertEqual(len(merged), 1)
         self.assertEqual(merged.iloc[0]["AppID"], "1")
+
+    def test_combine_dataframes_appends_rows_and_adds_source_file(self) -> None:
+        first = pd.DataFrame([{"Account": "0012", "Name": "Ada"}])
+        second = pd.DataFrame([{"Account": "0099", "Name": "Grace"}])
+        result = combine_dataframes(
+            file_entries=[
+                {"name": "data.xlsx", "df": first},
+                {"name": "data (1).xlsx", "df": second},
+            ],
+            schema_mode="Strict same columns",
+            add_source_file=True,
+            source_column_name="SourceFile",
+        )
+        combined = result["combined"]
+        self.assertEqual(len(combined), 2)
+        self.assertEqual(list(combined.columns), ["Account", "Name", "SourceFile"])
+        self.assertEqual(combined.iloc[0]["SourceFile"], "data.xlsx")
+        self.assertEqual(combined.iloc[1]["SourceFile"], "data (1).xlsx")
+
+    def test_combine_dataframes_rejects_schema_mismatch_in_strict_mode(self) -> None:
+        first = pd.DataFrame([{"Account": "0012", "Name": "Ada"}])
+        second = pd.DataFrame([{"Account": "0099", "FullName": "Grace"}])
+        with self.assertRaisesRegex(RuntimeError, "does not match the first file schema"):
+            combine_dataframes(
+                file_entries=[
+                    {"name": "data.xlsx", "df": first},
+                    {"name": "data (1).xlsx", "df": second},
+                ],
+                schema_mode="Strict same columns",
+                add_source_file=False,
+                source_column_name="SourceFile",
+            )
+
+    def test_combine_dataframes_supports_union_columns(self) -> None:
+        first = pd.DataFrame([{"Account": "0012", "Name": "Ada"}])
+        second = pd.DataFrame([{"Account": "0099", "Score": "11"}])
+        result = combine_dataframes(
+            file_entries=[
+                {"name": "data.xlsx", "df": first},
+                {"name": "data (1).xlsx", "df": second},
+            ],
+            schema_mode="Union columns",
+            add_source_file=False,
+            source_column_name="SourceFile",
+        )
+        combined = result["combined"].fillna("")
+        self.assertEqual(list(combined.columns), ["Account", "Name", "Score"])
+        self.assertEqual(combined.to_dict(orient="records"), [
+            {"Account": "0012", "Name": "Ada", "Score": ""},
+            {"Account": "0099", "Name": "", "Score": "11"},
+        ])
 
     def test_txt_plain_text_reads_as_value_column(self) -> None:
         restored = read_uploaded_file_as_df(

@@ -183,7 +183,16 @@
               <h3>Merge</h3>
             </div>
           </div>
-          <div class="form-grid form-grid--three">
+          <div class="form-grid form-grid--two">
+            <div class="form-group">
+              <label for="merge-combine-method">Combination mode</label>
+              <select id="merge-combine-method">
+                <option value="merge">Merge by keys</option>
+                <option value="append">Append rows</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-grid form-grid--three" id="merge-key-options">
             <div class="form-group">
               <label for="base-role">Base role</label>
               <select id="base-role"></select>
@@ -197,6 +206,23 @@
               </select>
             </div>
             <label class="checkbox inline-checkbox"><input id="exclude-unmatched" type="checkbox" checked><span>Exclude unmatched</span></label>
+          </div>
+          <div class="form-grid form-grid--three hidden" id="append-options">
+            <div class="form-group">
+              <label for="append-schema-mode">Schema handling</label>
+              <select id="append-schema-mode">
+                <option value="strict">Strict same columns</option>
+                <option value="union">Union columns</option>
+              </select>
+            </div>
+            <label class="checkbox inline-checkbox">
+              <input id="append-source-file" type="checkbox" checked>
+              <span>Add source file column</span>
+            </label>
+            <div class="form-group">
+              <label for="append-source-column">Source column name</label>
+              <input id="append-source-column" type="text" value="SourceFile">
+            </div>
           </div>
           <div class="inline-actions">
             <button class="btn" id="run-merge" type="button">Run Merge</button>

@@ -23,7 +23,7 @@ from data_io import (
     safe_filename,
     to_export_bytes,
 )
-from merge_utils import merge_dataframes, parse_merge_key_columns
+from merge_utils import combine_dataframes, merge_dataframes, parse_merge_key_columns
 from mapping_utils import CALLER_AI_REQUIRED_COLUMNS, build_caller_ai_output_spec, build_export_dataframe
 from template_utils import apply_template_to_defaults, build_template_payload
 from transforms import TRANSFORM_FUNCS
@@ -517,6 +517,12 @@ if app_mode == "Caller AI":
 
 
 st.markdown("### 1) Upload files")
+combine_method = st.radio(
+    "How should these files be combined?",
+    options=["Merge by keys", "Append rows"],
+    horizontal=True,
+    help="Use key-based merge when files share join columns. Use append rows when files have similar columns and should be stacked into one dataset.",
+)
 uploaded_files = st.file_uploader(
     "Upload files",
     type=SUPPORTED_INPUT_TYPES,
@@ -530,13 +536,6 @@ if not uploaded_files:
 file_entries: List[Dict[str, Any]] = []
 for idx, uploaded in enumerate(uploaded_files):
     st.markdown(f"#### File {idx + 1}: `{uploaded.name}`")
-    default_role = f"File{idx + 1}"
-    role = st.text_input(
-        f"Role name ({uploaded.name})",
-        value=default_role,
-        key=f"role_{idx}",
-        help="Give each upload a stable label, for example Applications or Payments.",
-    ).strip() or default_role
     try:
         parsed = parse_file_with_ui(
             uploaded,
@@ -550,93 +549,147 @@ for idx, uploaded in enumerate(uploaded_files):
         st.error(f"Failed to read '{uploaded.name}'. Error: {exc}")
         st.stop()
 
-    default_keys = template_defaults.get("merge_keys_by_role", {}).get(role, ["AppID"])
-    key_cols_raw = st.text_input(
-        f"Merge key columns ({uploaded.name})",
-        value=", ".join(default_keys),
-        key=f"keys_{idx}",
-        help="Use one or more columns separated by commas to create a composite merge key.",
-    )
-    key_cols = parse_merge_key_columns(key_cols_raw)
-    duplicate_strategy = st.selectbox(
-        f"Duplicate key strategy ({uploaded.name})",
-        options=["Keep first", "Keep last", "Aggregate values", "Error"],
-        index=["Keep first", "Keep last", "Aggregate values", "Error"].index(
-            template_defaults.get("duplicate_strategy_by_role", {}).get(role, "Keep first")
-        ),
-        key=f"dupes_{idx}",
-    )
+    if combine_method == "Merge by keys":
+        default_role = f"File{idx + 1}"
+        role = st.text_input(
+            f"Role name ({uploaded.name})",
+            value=default_role,
+            key=f"role_{idx}",
+            help="Give each upload a stable label, for example Applications or Payments.",
+        ).strip() or default_role
+        default_keys = template_defaults.get("merge_keys_by_role", {}).get(role, ["AppID"])
+        key_cols_raw = st.text_input(
+            f"Merge key columns ({uploaded.name})",
+            value=", ".join(default_keys),
+            key=f"keys_{idx}",
+            help="Use one or more columns separated by commas to create a composite merge key.",
+        )
+        key_cols = parse_merge_key_columns(key_cols_raw)
+        duplicate_strategy = st.selectbox(
+            f"Duplicate key strategy ({uploaded.name})",
+            options=["Keep first", "Keep last", "Aggregate values", "Error"],
+            index=["Keep first", "Keep last", "Aggregate values", "Error"].index(
+                template_defaults.get("duplicate_strategy_by_role", {}).get(role, "Keep first")
+            ),
+            key=f"dupes_{idx}",
+        )
+        file_entries.append(
+            {
+                "name": uploaded.name,
+                "role": role,
+                "df": parsed["df"],
+                "key_cols": key_cols,
+                "duplicate_strategy": duplicate_strategy,
+            }
+        )
+    else:
+        file_entries.append({"name": uploaded.name, "df": parsed["df"]})
 
     st.caption(f"Rows: {len(parsed['df']):,} | Columns: {parsed['df'].shape[1]:,}")
     st.dataframe(parsed["df"].head(min(preview_rows, 25)), use_container_width=True)
 
-    file_entries.append(
-        {
-            "name": uploaded.name,
-            "role": role,
-            "df": parsed["df"],
-            "key_cols": key_cols,
-            "duplicate_strategy": duplicate_strategy,
-        }
+download_base_name = "combined_output"
+download_label_prefix = "Download Combined/Transformed"
+
+if combine_method == "Merge by keys":
+    roles = [entry["role"] for entry in file_entries]
+    if len(set(roles)) != len(roles):
+        st.error("Role names must be unique.")
+        st.stop()
+    if any(not entry["key_cols"] for entry in file_entries):
+        st.error("Every file needs at least one merge key column.")
+        st.stop()
+
+    st.divider()
+    st.subheader("2) Merge")
+    base_role_default = template_defaults.get("base_role", roles[0])
+    if base_role_default not in roles:
+        base_role_default = roles[0]
+
+    base_role = st.selectbox("Base dataset role", roles, index=roles.index(base_role_default))
+    join_type = st.selectbox(
+        "Join type",
+        options=["left", "inner", "outer"],
+        index=["left", "inner", "outer"].index(template_defaults.get("join_type", "left")),
+    )
+    exclude_unmatched = st.checkbox(
+        "Exclude records not matched across files",
+        value=True,
+        help="When enabled, only rows matched in every merge step remain in the final output.",
     )
 
-roles = [entry["role"] for entry in file_entries]
-if len(set(roles)) != len(roles):
-    st.error("Role names must be unique.")
-    st.stop()
-if any(not entry["key_cols"] for entry in file_entries):
-    st.error("Every file needs at least one merge key column.")
-    st.stop()
+    try:
+        combine_result = merge_dataframes(
+            file_entries=file_entries,
+            base_role=base_role,
+            join_type=join_type,
+            exclude_unmatched=exclude_unmatched,
+            delimiter=delimiter,
+            encoding=encoding_map[encoding_label],
+            quoting=quoting,
+            escapechar_enabled=escapechar_enabled,
+            date_format=date_format,
+        )
+    except Exception as exc:
+        st.error(f"Merge failed. Error: {exc}")
+        st.stop()
 
-st.divider()
-st.subheader("2) Merge")
-base_role_default = template_defaults.get("base_role", roles[0])
-if base_role_default not in roles:
-    base_role_default = roles[0]
+    merged = combine_result["merged"]
+    st.subheader("Diagnostics")
+    st.dataframe(combine_result["diagnostics"], use_container_width=True)
+    if combine_result["notes"]:
+        st.info("Merge notes:\n\n- " + "\n- ".join(combine_result["notes"]))
+    if combine_result["has_unmatched_reports"]:
+        st.download_button(
+            "Download unmatched rows report (ZIP)",
+            data=combine_result["unmatched_zip"],
+            file_name=f"{safe_filename(base_role)}_unmatched_reports.zip",
+            mime="application/zip",
+        )
 
-base_role = st.selectbox("Base dataset role", roles, index=roles.index(base_role_default))
-join_type = st.selectbox(
-    "Join type",
-    options=["left", "inner", "outer"],
-    index=["left", "inner", "outer"].index(template_defaults.get("join_type", "left")),
-)
-exclude_unmatched = st.checkbox(
-    "Exclude records not matched across files",
-    value=True,
-    help="When enabled, only rows matched in every merge step remain in the final output.",
-)
-
-try:
-    merge_result = merge_dataframes(
-        file_entries=file_entries,
-        base_role=base_role,
-        join_type=join_type,
-        exclude_unmatched=exclude_unmatched,
-        delimiter=delimiter,
-        encoding=encoding_map[encoding_label],
-        quoting=quoting,
-        escapechar_enabled=escapechar_enabled,
-        date_format=date_format,
+    st.success(f"Merged rows: {len(merged):,} | Columns: {merged.shape[1]:,}")
+    st.dataframe(merged.head(preview_rows), use_container_width=True)
+    download_base_name = safe_filename(base_role)
+    download_label_prefix = "Download Merged/Transformed"
+else:
+    st.divider()
+    st.subheader("2) Combine")
+    schema_mode = st.selectbox(
+        "Schema handling",
+        options=["Strict same columns", "Union columns"],
+        index=0,
+        help="Strict mode requires the same columns in every file. Union mode keeps all columns found across the upload set.",
     )
-except Exception as exc:
-    st.error(f"Merge failed. Error: {exc}")
-    st.stop()
-
-merged = merge_result["merged"]
-st.subheader("Diagnostics")
-st.dataframe(merge_result["diagnostics"], use_container_width=True)
-if merge_result["notes"]:
-    st.info("Merge notes:\n\n- " + "\n- ".join(merge_result["notes"]))
-if merge_result["has_unmatched_reports"]:
-    st.download_button(
-        "Download unmatched rows report (ZIP)",
-        data=merge_result["unmatched_zip"],
-        file_name=f"{safe_filename(base_role)}_unmatched_reports.zip",
-        mime="application/zip",
+    add_source_file = st.checkbox(
+        "Add source file column",
+        value=True,
+        help="Adds the original file name to each row in the combined output.",
     )
+    source_column_name = "SourceFile"
+    if add_source_file:
+        source_column_name = st.text_input("Source file column name", value="SourceFile").strip() or "SourceFile"
 
-st.success(f"Merged rows: {len(merged):,} | Columns: {merged.shape[1]:,}")
-st.dataframe(merged.head(preview_rows), use_container_width=True)
+    try:
+        combine_result = combine_dataframes(
+            file_entries=file_entries,
+            schema_mode=schema_mode,
+            add_source_file=add_source_file,
+            source_column_name=source_column_name,
+        )
+    except Exception as exc:
+        st.error(f"Combine failed. Error: {exc}")
+        st.stop()
+
+    merged = combine_result["combined"]
+    st.subheader("Diagnostics")
+    st.dataframe(combine_result["diagnostics"], use_container_width=True)
+    if combine_result["notes"]:
+        st.info("Combine notes:\n\n- " + "\n- ".join(combine_result["notes"]))
+
+    st.success(f"Combined rows: {len(merged):,} | Columns: {merged.shape[1]:,}")
+    st.dataframe(merged.head(preview_rows), use_container_width=True)
+    first_base_name = uploaded_files[0].name.rsplit(".", 1)[0] if uploaded_files else "combined_output"
+    download_base_name = safe_filename(f"{first_base_name}_combined")
 
 st.divider()
 st.subheader("3) Build export columns")
@@ -704,7 +757,7 @@ if duplicate_outputs:
 
 export_df, missing_sources = build_export_dataframe(merged, out_rows)
 if missing_sources:
-    st.warning("Some mapped source columns were not found after merge: " + ", ".join(missing_sources))
+    st.warning("Some mapped source columns were not found after the combined dataset was built: " + ", ".join(missing_sources))
 if export_df.shape[1] == 0:
     st.warning("No export columns are configured. Add at least one output column name, or use '(blank)' to create an empty required column.")
 
@@ -720,7 +773,7 @@ merged_xml_options = render_xml_options("merged") if merged_output_type == "xml"
 try:
     render_download_button(
         df=export_df,
-        base_name=safe_filename(base_role),
+        base_name=download_base_name,
         output_type=merged_output_type,
         delimiter=delimiter if merged_output_type != "tsv" else "\t",
         encoding=encoding_map[encoding_label],
@@ -730,23 +783,24 @@ try:
         json_orient=merged_json_orient,
         xml_root=merged_xml_options["root"],
         xml_row=merged_xml_options["row"],
-        label_prefix="Download Merged/Transformed",
+        label_prefix=download_label_prefix,
     )
 except Exception as exc:
-    st.error(f"Failed to create merged export. Error: {exc}")
+    st.error(f"Failed to create combined export. Error: {exc}")
 
-st.divider()
-st.subheader("5) Save mapping template")
-template_payload = build_template_payload(
-    join_type=join_type,
-    base_role=base_role,
-    merge_keys_by_role={entry["role"]: entry["key_cols"] for entry in file_entries},
-    duplicate_strategy_by_role={entry["role"]: entry["duplicate_strategy"] for entry in file_entries},
-    out_rows=out_rows,
-)
-st.download_button(
-    "Download mapping template (.json)",
-    data=json.dumps(template_payload, indent=2).encode("utf-8"),
-    file_name=f"{safe_filename(base_role)}_mapping_template.json",
-    mime="application/json",
-)
+if combine_method == "Merge by keys":
+    st.divider()
+    st.subheader("5) Save mapping template")
+    template_payload = build_template_payload(
+        join_type=join_type,
+        base_role=base_role,
+        merge_keys_by_role={entry["role"]: entry["key_cols"] for entry in file_entries},
+        duplicate_strategy_by_role={entry["role"]: entry["duplicate_strategy"] for entry in file_entries},
+        out_rows=out_rows,
+    )
+    st.download_button(
+        "Download mapping template (.json)",
+        data=json.dumps(template_payload, indent=2).encode("utf-8"),
+        file_name=f"{safe_filename(base_role)}_mapping_template.json",
+        mime="application/json",
+    )

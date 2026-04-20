@@ -1,6 +1,6 @@
 import io
 import zipfile
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Set, Tuple
 
 import pandas as pd
 
@@ -193,4 +193,94 @@ def merge_dataframes(
         "notes": notes,
         "unmatched_zip": unmatched_zip,
         "has_unmatched_reports": any(not report["df"].empty for report in unmatched_reports),
+    }
+
+
+def _next_available_column_name(preferred: str, existing: Set[str]) -> str:
+    candidate = preferred.strip() or "SourceFile"
+    if candidate not in existing:
+        return candidate
+    suffix = 1
+    while f"{candidate}_{suffix}" in existing:
+        suffix += 1
+    return f"{candidate}_{suffix}"
+
+
+def combine_dataframes(
+    file_entries: List[Dict[str, Any]],
+    schema_mode: str,
+    add_source_file: bool,
+    source_column_name: str,
+) -> Dict[str, Any]:
+    if not file_entries:
+        raise RuntimeError("At least one file is required to combine.")
+
+    diagnostics: List[Dict[str, Any]] = []
+    notes: List[str] = []
+    ordered_columns: List[str] = []
+    ordered_seen: Set[str] = set()
+
+    for entry in file_entries:
+        df = entry["df"]
+        diagnostics.append(
+            {
+                "File": entry["name"],
+                "Rows": int(len(df)),
+                "Columns": int(df.shape[1]),
+            }
+        )
+        for column in df.columns:
+            if column not in ordered_seen:
+                ordered_seen.add(column)
+                ordered_columns.append(column)
+
+    first_columns = list(file_entries[0]["df"].columns)
+    combine_columns = ordered_columns if schema_mode == "Union columns" else list(first_columns)
+
+    if schema_mode == "Strict same columns":
+        first_column_set = set(first_columns)
+        for entry in file_entries[1:]:
+            entry_columns = list(entry["df"].columns)
+            entry_column_set = set(entry_columns)
+            if entry_column_set != first_column_set:
+                missing = [column for column in first_columns if column not in entry_column_set]
+                extras = [column for column in entry_columns if column not in first_column_set]
+                detail_parts: List[str] = []
+                if missing:
+                    detail_parts.append(f"missing columns: {', '.join(missing)}")
+                if extras:
+                    detail_parts.append(f"extra columns: {', '.join(extras)}")
+                detail = "; ".join(detail_parts) if detail_parts else "columns differ"
+                raise RuntimeError(f"{entry['name']} does not match the first file schema ({detail}).")
+        notes.append("Schema mode: strict same columns")
+    elif schema_mode == "Union columns":
+        notes.append("Schema mode: union columns")
+    else:
+        raise RuntimeError(f"Unsupported schema mode: {schema_mode}")
+
+    final_source_column_name = source_column_name.strip() or "SourceFile"
+    if add_source_file:
+        final_source_column_name = _next_available_column_name(final_source_column_name, set(combine_columns))
+        if final_source_column_name != (source_column_name.strip() or "SourceFile"):
+            notes.append(f"Source column renamed to {final_source_column_name} to avoid a name collision")
+
+    combined_frames: List[pd.DataFrame] = []
+    for entry in file_entries:
+        prepared = entry["df"].reindex(columns=combine_columns)
+        if add_source_file:
+            prepared = prepared.copy()
+            prepared[final_source_column_name] = entry["name"]
+        combined_frames.append(prepared)
+
+    combined = pd.concat(combined_frames, ignore_index=True) if combined_frames else pd.DataFrame(columns=combine_columns)
+    if add_source_file:
+        combine_columns = list(combine_columns) + [final_source_column_name]
+        combined = combined.reindex(columns=combine_columns)
+
+    notes.append(f"Combined {len(file_entries):,} files into {len(combined):,} rows")
+    return {
+        "combined": combined,
+        "diagnostics": pd.DataFrame(diagnostics),
+        "notes": notes,
+        "source_column_name": final_source_column_name if add_source_file else None,
     }
