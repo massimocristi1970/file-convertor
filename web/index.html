@@ -85,7 +85,7 @@
         <div class="section-header">
           <div>
             <h2>Caller AI</h2>
-            <p>Upload one file and map it into the required Caller AI CSV columns.</p>
+            <p>Upload one file and map it into the Caller AI CSV columns you want to download.</p>
           </div>
         </div>
         <div class="form-grid form-grid--two">
@@ -94,7 +94,7 @@
             <input id="caller-ai-file" type="file" accept=".xlsx,.csv,.tsv,.txt,.json,.xml">
           </div>
           <div class="form-group">
-            <label>Required output</label>
+            <label>Suggested starter columns</label>
             <input type="text" value="Name, PhoneNumber, CardNumber, DateOfBirth, PostalCode, Title, Surname" disabled>
           </div>
           <div class="form-group text-settings">
@@ -112,12 +112,17 @@
             <input id="caller-ai-header-row" type="number" min="1" value="1">
           </div>
         </div>
-        <div class="alert alert-info" id="caller-ai-status">Upload a file to build a Caller AI CSV.</div>
+        <div class="alert alert-info" id="caller-ai-status">Upload a file to build your Caller AI CSV.</div>
 
         <div class="card inner-card stack">
           <div class="section-header">
             <div>
               <h3>Output Mapping</h3>
+              <p>Add, remove, or rename output columns to control exactly what appears in the downloaded file.</p>
+            </div>
+            <div class="inline-actions">
+              <button class="btn btn-secondary" id="caller-ai-add-output" type="button">Add Output Column</button>
+              <button class="btn btn-ghost" id="caller-ai-reset-defaults" type="button">Reset Suggested Columns</button>
             </div>
           </div>
           <div class="mapping-list stack" id="caller-ai-mapping-list"></div>

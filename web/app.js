@@ -1,7 +1,7 @@
 const INPUT_TYPES = ["xlsx", "csv", "tsv", "txt", "json", "xml"];
 const OUTPUT_TYPES = ["csv", "tsv", "txt", "xlsx", "json", "xml"];
 const TRANSFORMS = ["None", "Text (force)", "UK Postcode (extract)", "Address first line (before comma)", "UK mobile -> 44", "Digits only", "Digits: keep last N", "Extract by regex", "Split + take part", "Prefix if missing", "Suffix", "Regex replace", "Date: format", "Name: extract first", "Name: extract title", "Name: extract surname"];
-const CALLER_AI_REQUIRED_COLUMNS = ["Name", "PhoneNumber", "CardNumber", "DateOfBirth", "PostalCode", "Title", "Surname"];
+const CALLER_AI_DEFAULT_COLUMNS = ["Name", "PhoneNumber", "CardNumber", "DateOfBirth", "PostalCode", "Title", "Surname"];
 const DUMMY_CARD_OUTPUT_NAMES = new Set(["CardNumber"]);
 function dummyCardNumber() {
   return String(Math.floor(Math.random() * 10000)).padStart(4, "0");
@@ -61,6 +61,15 @@ function buildCallerAiOutputSpec(columns) {
     { source: titleSource || "(blank)", transform: "Name: extract title", params: {}, output_name: "Title" },
     { source: surnameSource || "(blank)", transform: "Name: extract surname", params: {}, output_name: "Surname" }
   ];
+}
+function buildCallerAiDefaultRow(outputName, columns = []) {
+  const defaultRows = buildCallerAiOutputSpec(columns);
+  const matched = defaultRows.find((row) => row.output_name === outputName);
+  if (matched) return { ...matched, params: { ...(matched.params || {}) } };
+  return { source: "(blank)", transform: "None", params: {}, output_name: outputName || "" };
+}
+function resetCallerAiOutputRows(columns) {
+  state.callerAi.exportRows = CALLER_AI_DEFAULT_COLUMNS.map((outputName) => buildCallerAiDefaultRow(outputName, columns));
 }
 function looksLikeXmlText(text) { const trimmed = text.trimStart(); return trimmed.startsWith("<?xml") || trimmed.startsWith("<"); }
 function autoDelimiter(text) {
@@ -395,7 +404,7 @@ function renderCallerAiMappingRows() {
     const item = document.createElement("div"); item.className = "mapping-row";
     const sourceOptions = ["(blank)", ...columns].map((column) => `<option value="${escapeHtml(column)}" ${row.source === column ? "selected" : ""}>${escapeHtml(column)}</option>`).join("");
     const transformOptions = TRANSFORMS.map((name) => `<option value="${escapeHtml(name)}" ${row.transform === name ? "selected" : ""}>${escapeHtml(name)}</option>`).join("");
-    item.innerHTML = `<div class="form-group"><label>Source</label><select data-caller-ai-field="source" data-index="${index}">${sourceOptions}</select></div><div class="form-group"><label>Transform</label><select data-caller-ai-field="transform" data-index="${index}">${transformOptions}</select></div><div class="form-group"><label>Output name</label><input value="${escapeHtml(row.output_name || "")}" disabled></div>`;
+    item.innerHTML = `<div class="form-group"><label>Source</label><select data-caller-ai-field="source" data-index="${index}">${sourceOptions}</select></div><div class="form-group"><label>Transform</label><select data-caller-ai-field="transform" data-index="${index}">${transformOptions}</select></div><div class="form-group"><label>Output name</label><input data-caller-ai-field="output_name" data-index="${index}" value="${escapeHtml(row.output_name || "")}" placeholder="e.g. PhoneNumber"></div><button class="btn btn-ghost" data-caller-ai-remove-index="${index}" type="button">Remove</button>`;
     list.appendChild(item);
     if (["Digits: keep last N", "Extract by regex", "Split + take part", "Prefix if missing", "Suffix", "Regex replace"].includes(row.transform)) {
       const params = document.createElement("div"); params.className = "form-grid form-grid--three";
@@ -403,6 +412,16 @@ function renderCallerAiMappingRows() {
       list.appendChild(params);
     }
   });
+  const add = document.createElement("button");
+  add.className = "btn btn-secondary";
+  add.type = "button";
+  add.textContent = "Add Output Column";
+  add.onclick = () => {
+    state.callerAi.exportRows.push({ source: "(blank)", transform: "None", params: {}, output_name: "" });
+    renderCallerAiMappingRows();
+    updateCallerAiExportRows();
+  };
+  list.appendChild(add);
 }
 function renderParamInputs(row, index) {
   const p = row.params || {};
@@ -465,11 +484,16 @@ function updateExportRows() {
   }
 }
 function updateCallerAiExportRows() {
-  const previewColumns = CALLER_AI_REQUIRED_COLUMNS.slice();
+  state.callerAi.exportRows = state.callerAi.exportRows.filter((row) => row.output_name || row.source !== "(blank)");
+  const activeRows = state.callerAi.exportRows
+    .map((row) => ({ ...row, output_name: String(row.output_name || "").trim() }))
+    .filter((row) => row.output_name);
+  const previewColumns = activeRows.map((row) => row.output_name);
+  const duplicateNames = previewColumns.filter((name, index) => previewColumns.indexOf(name) !== index);
   const missingSources = [];
   const exportData = (state.callerAi.rows || []).map((sourceRow) => {
     const out = {};
-    state.callerAi.exportRows.forEach((row) => {
+    activeRows.forEach((row) => {
       if (row.source === "(blank)") {
         out[row.output_name] = DUMMY_CARD_OUTPUT_NAMES.has(row.output_name) ? dummyCardNumber() : "";
         return;
@@ -497,9 +521,13 @@ function updateCallerAiExportRows() {
   state.callerAi.previewRows = exportData;
   state.callerAi.previewColumns = previewColumns;
   renderTable("caller-ai-table", exportData, 25, previewColumns);
-  const dummyCardUsed = state.callerAi.exportRows.some((row) => row.output_name === "CardNumber" && row.source === "(blank)");
+  const dummyCardUsed = activeRows.some((row) => row.output_name === "CardNumber" && row.source === "(blank)");
   if (!state.callerAi.rows.length) {
     setStatus("caller-ai-export-status", "Preview will appear after the file is parsed.", "info");
+  } else if (duplicateNames.length) {
+    setStatus("caller-ai-export-status", `Output column names must be unique: ${Array.from(new Set(duplicateNames)).join(", ")}`, "danger");
+  } else if (!previewColumns.length) {
+    setStatus("caller-ai-export-status", "Add at least one output column to build the download preview.", "info");
   } else if (missingSources.length) {
     setStatus("caller-ai-export-status", `Some Caller AI source columns were not found: ${Array.from(new Set(missingSources)).join(", ")}`, "danger");
   } else if (dummyCardUsed) {
@@ -546,15 +574,17 @@ async function handleCallerAiFile() {
   try {
     const parsed = await parseFile(file, { delimiter: document.getElementById("caller-ai-delimiter").value, headerRow: document.getElementById("caller-ai-header-row").value });
     const columns = uniqueColumns(parsed.rows);
+    const parsedName = `${safeFilename(file.name.replace(/\.[^.]+$/, ""))}_caller_ai`;
     state.callerAi = {
       file,
       rows: parsed.rows,
       columns,
-      exportRows: buildCallerAiOutputSpec(columns),
+      exportRows: [],
       previewRows: [],
-      previewColumns: CALLER_AI_REQUIRED_COLUMNS.slice(),
-      parsedName: `${safeFilename(file.name.replace(/\.[^.]+$/, ""))}_caller_ai`
+      previewColumns: [],
+      parsedName
     };
+    resetCallerAiOutputRows(columns);
     renderCallerAiMappingRows();
     renderTable("caller-ai-source-table", parsed.rows);
     updateCallerAiExportRows();
@@ -630,7 +660,17 @@ function bindEvents() {
       setStatus("caller-ai-export-status", "There is no Caller AI CSV to download yet.", "danger");
       return;
     }
-    exportRows(state.callerAi.previewRows || [], state.callerAi.parsedName || "caller_ai", "csv", CALLER_AI_REQUIRED_COLUMNS);
+    exportRows(state.callerAi.previewRows || [], state.callerAi.parsedName || "caller_ai", "csv", state.callerAi.previewColumns || []);
+  });
+  document.getElementById("caller-ai-add-output").addEventListener("click", () => {
+    state.callerAi.exportRows.push({ source: "(blank)", transform: "None", params: {}, output_name: "" });
+    renderCallerAiMappingRows();
+    updateCallerAiExportRows();
+  });
+  document.getElementById("caller-ai-reset-defaults").addEventListener("click", () => {
+    resetCallerAiOutputRows(state.callerAi.columns || []);
+    renderCallerAiMappingRows();
+    updateCallerAiExportRows();
   });
   document.getElementById("merge-files").addEventListener("change", handleMergeFiles);
   document.getElementById("run-merge").addEventListener("click", runMerge);
@@ -709,6 +749,9 @@ function bindEvents() {
     }
     if (target.matches("[data-remove-index]")) {
       state.merge.exportRows.splice(Number(target.dataset.removeIndex), 1); renderMappingRows(); updateExportRows();
+    }
+    if (target.matches("[data-caller-ai-remove-index]")) {
+      state.callerAi.exportRows.splice(Number(target.dataset.callerAiRemoveIndex), 1); renderCallerAiMappingRows(); updateCallerAiExportRows();
     }
   });
 }
