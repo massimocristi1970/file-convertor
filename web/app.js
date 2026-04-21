@@ -520,8 +520,9 @@ function formatDateValue(value, outputFormat = "%Y-%m-%d") {
   return Number.isNaN(parsed.getTime()) ? text : formatDateParts(parsed, outputFormat);
 }
 function applyTransformValue(value, name, params) {
-  const text = String(value ?? "");
-  if (name === "None" || name === "Text (force)") return text;
+  if (name === "None") return value instanceof Date && !Number.isNaN(value.getTime()) ? value : (value ?? "");
+  const text = value instanceof Date && !Number.isNaN(value.getTime()) ? formatDateForDownload(value) : String(value ?? "");
+  if (name === "Text (force)") return text;
   if (name === "UK Postcode (extract)") { const match = text.toUpperCase().match(/\b([A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2})\b/); return match ? match[1].trim() : ""; }
   if (name === "Address first line (before comma)") return text.split(",").map((part) => part.trim()).find(Boolean) || text.trim();
   if (name === "UK mobile -> 44") { let digits = text.replace(/\s+/g, "").replace(/\.0$/, "").replace(/\D/g, ""); if (!digits) return ""; if (digits.startsWith("44")) return digits; if (digits.startsWith("0")) return `44${digits.slice(1)}`; return `44${digits}`; }
