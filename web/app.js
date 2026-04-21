@@ -578,7 +578,7 @@ function renderMergeDiagnostics() {
 }
 function renderMergeNotes() {
   const el = document.getElementById("merge-notes");
-  el.innerHTML = state.merge.notes.length ? state.merge.notes.map((note) => `<div>${note}</div>`).join("") : "No notes yet.";
+  el.innerHTML = state.merge.notes.length ? state.merge.notes.map((note) => `<div>${note}</div>`).join("") : "No merge notes.";
 }
 function resetMergeResults() {
   state.merge.mergedRows = [];
@@ -718,7 +718,7 @@ function updateExportRows() {
   } else if (!previewColumns.length) {
     setStatus("export-status", "No export columns are configured yet. Add at least one output column name, or use '(blank)' to create an empty required column.", "info");
   } else if (missingSources.length) {
-    setStatus("export-status", `Some mapped source columns were not found after the combined dataset was built: ${missingSources.join(", ")}`, "danger");
+    setStatus("export-status", `Some mapped source columns were not found after merge: ${missingSources.join(", ")}`, "danger");
   } else {
     setStatus("export-status", `Export preview ready: ${exportData.length} row(s), ${previewColumns.length} column(s).`, "info");
   }
