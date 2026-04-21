@@ -932,6 +932,7 @@ function runMerge() {
     state.merge.unmatchedReports = unmatchedReports;
     renderMergeDiagnostics(); renderMergeNotes();
     if (!state.merge.exportRows.length) buildDefaultOutputRows(document.getElementById("output-columns-count").value);
+    renderMappingRows();
     updateExportRows();
     setStatus("merge-status", `Merged ${state.merge.mergedRows.length} row(s).`, "info");
   } catch (error) { setStatus("merge-status", error.message, "danger"); }
