@@ -834,6 +834,28 @@ function buildDefaultOutputRows(count) {
   renderMappingRows();
   updateExportRows();
 }
+function updateMergeMappingField(target) {
+  const row = state.merge.exportRows[Number(target.dataset.index)];
+  if (!row) return;
+  const previousSource = row.source;
+  row[target.dataset.field] = target.dataset.field === "transform" ? normaliseTransformName(target.value) : target.value;
+  if (target.dataset.field === "source") {
+    const trimmedOutputName = String(row.output_name || "").trim();
+    if ((!trimmedOutputName || trimmedOutputName === previousSource) && target.value !== "(blank)") row.output_name = target.value;
+    if (trimmedOutputName === previousSource && target.value === "(blank)") row.output_name = "";
+  }
+  if (target.dataset.field === "transform") row.params = getTransformParams(target.value);
+  renderMappingRows();
+  updateExportRows();
+}
+function updateCallerAiMappingField(target) {
+  const row = state.callerAi.exportRows[Number(target.dataset.index)];
+  if (!row) return;
+  row[target.dataset.callerAiField] = target.dataset.callerAiField === "transform" ? normaliseTransformName(target.value) : target.value;
+  if (target.dataset.callerAiField === "transform") row.params = getTransformParams(target.value);
+  renderCallerAiMappingRows();
+  updateCallerAiExportRows();
+}
 async function handleSimpleFile() {
   const file = document.getElementById("simple-file").files[0];
   if (!file) return;
@@ -1040,24 +1062,10 @@ function bindEvents() {
       renderFileCards(); resetMergeResults();
     }
     if (target.matches("[data-field]")) {
-      const row = state.merge.exportRows[Number(target.dataset.index)];
-      if (!row) return;
-      const previousSource = row.source;
-      row[target.dataset.field] = target.dataset.field === "transform" ? normaliseTransformName(target.value) : target.value;
-      if (target.dataset.field === "source") {
-        const trimmedOutputName = String(row.output_name || "").trim();
-        if ((!trimmedOutputName || trimmedOutputName === previousSource) && target.value !== "(blank)") row.output_name = target.value;
-        if (trimmedOutputName === previousSource && target.value === "(blank)") row.output_name = "";
-      }
-      if (target.dataset.field === "transform") row.params = getTransformParams(target.value);
-      renderMappingRows(); updateExportRows();
+      if (target.tagName === "INPUT") updateMergeMappingField(target);
     }
     if (target.matches("[data-caller-ai-field]")) {
-      const row = state.callerAi.exportRows[Number(target.dataset.index)];
-      if (!row) return;
-      row[target.dataset.callerAiField] = target.dataset.callerAiField === "transform" ? normaliseTransformName(target.value) : target.value;
-      if (target.dataset.callerAiField === "transform") row.params = getTransformParams(target.value);
-      renderCallerAiMappingRows(); updateCallerAiExportRows();
+      if (target.tagName === "INPUT") updateCallerAiMappingField(target);
     }
     if (target.matches("[data-param]")) {
       const row = state.merge.exportRows[Number(target.dataset.index)];
@@ -1082,6 +1090,8 @@ function bindEvents() {
       entry.duplicateStrategy = target.value;
       resetMergeResults();
     }
+    if (target.matches("[data-field]") && target.tagName === "SELECT") updateMergeMappingField(target);
+    if (target.matches("[data-caller-ai-field]") && target.tagName === "SELECT") updateCallerAiMappingField(target);
     if (target.matches("[data-param]") && target.type === "checkbox") {
       const row = state.merge.exportRows[Number(target.dataset.index)];
       if (!row) return;
