@@ -20,7 +20,7 @@
           <div class="inline-actions mode-switch">
             <button class="btn mode-tab active" data-mode="simple" type="button">Simple Convert</button>
             <button class="btn btn-secondary mode-tab" data-mode="caller-ai" type="button">Caller AI</button>
-            <button class="btn btn-secondary mode-tab" data-mode="merge" type="button">Merge + Map + Transform</button>
+            <button class="btn btn-secondary mode-tab" data-mode="merge" type="button">Combine Files</button>
           </div>
         </div>
       </header>
@@ -164,7 +164,7 @@
       <section class="card stack hidden" id="merge-mode">
         <div class="section-header">
           <div>
-            <h2>Merge + Map + Transform</h2>
+            <h2>Combine Files</h2>
           </div>
           <div class="inline-actions">
             <input id="merge-files" type="file" accept=".xlsx,.csv,.tsv,.txt,.json,.xml" multiple hidden>
@@ -185,10 +185,10 @@
           </div>
           <div class="form-grid form-grid--two">
             <div class="form-group">
-              <label for="merge-combine-method">Combination mode</label>
+              <label for="merge-combine-method">Combine method</label>
               <select id="merge-combine-method">
-                <option value="merge">Merge by keys</option>
-                <option value="append">Append rows</option>
+                <option value="merge">Match by keys</option>
+                <option value="append">Combine rows</option>
               </select>
             </div>
           </div>
@@ -209,7 +209,7 @@
           </div>
           <div class="form-grid form-grid--three hidden" id="append-options">
             <div class="form-group">
-              <label for="append-schema-mode">Schema handling</label>
+              <label for="append-schema-mode">Schema rule</label>
               <select id="append-schema-mode">
                 <option value="strict">Strict same columns</option>
                 <option value="union">Union columns</option>
@@ -217,22 +217,22 @@
             </div>
             <label class="checkbox inline-checkbox">
               <input id="append-source-file" type="checkbox" checked>
-              <span>Add source file column</span>
+              <span>Keep source file name</span>
             </label>
             <div class="form-group">
-              <label for="append-source-column">Source column name</label>
+              <label for="append-source-column">Source file column</label>
               <input id="append-source-column" type="text" value="SourceFile">
             </div>
           </div>
           <div class="inline-actions">
-            <button class="btn" id="run-merge" type="button">Run Merge</button>
+            <button class="btn" id="run-merge" type="button">Combine Files</button>
             <button class="btn btn-secondary" id="download-unmatched" type="button">Download Unmatched ZIP</button>
           </div>
           <div class="stats-strip compact" id="merge-diagnostics"></div>
           <div class="surface-panel" id="merge-notes"></div>
         </div>
 
-        <div class="card inner-card stack">
+        <div class="card inner-card stack" id="merge-mapping-card">
           <div class="section-header">
             <div>
               <h3>Output Mapping</h3>
@@ -245,10 +245,10 @@
           <div class="mapping-list stack" id="mapping-list"></div>
         </div>
 
-        <div class="card inner-card stack">
+        <div class="card inner-card stack" id="merge-export-card">
           <div class="section-header">
             <div>
-              <h3>Export</h3>
+              <h3>Download</h3>
             </div>
           </div>
           <div class="form-grid form-grid--two">
@@ -264,14 +264,14 @@
               </select>
             </div>
             <div class="form-group">
-              <label for="merge-export-name">Export name</label>
+              <label for="merge-export-name">File name</label>
               <input id="merge-export-name" type="text" value="merged_output">
             </div>
           </div>
           <div class="inline-actions">
-            <button class="btn" id="download-merged" type="button">Download Output</button>
+            <button class="btn" id="download-merged" type="button">Download File</button>
           </div>
-          <div class="alert alert-info" id="export-status">Run a merge and configure output columns to preview the export.</div>
+          <div class="alert alert-info" id="export-status">Combine your files to preview and download the result.</div>
           <div class="table-wrap">
             <table id="merge-table">
               <thead></thead>

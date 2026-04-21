@@ -452,7 +452,7 @@ function renderMergeDiagnostics() {
 }
 function renderMergeNotes() {
   const el = document.getElementById("merge-notes");
-  el.innerHTML = state.merge.notes.length ? state.merge.notes.map((note) => `<div>${note}</div>`).join("") : "No combine notes.";
+  el.innerHTML = state.merge.notes.length ? state.merge.notes.map((note) => `<div>${note}</div>`).join("") : "No notes yet.";
 }
 function renderMappingRows() {
   const list = document.getElementById("mapping-list"); list.innerHTML = "";
@@ -518,6 +518,17 @@ function renderCallerAiParamInputs(row, index) {
   return "";
 }
 function updateExportRows() {
+  if (state.merge.combineMethod === "append") {
+    state.merge.previewRows = state.merge.mergedRows || [];
+    state.merge.previewColumns = state.merge.mergedColumns || [];
+    renderTable("merge-table", state.merge.previewRows, 25, state.merge.previewColumns);
+    if (!state.merge.previewColumns.length) {
+      setStatus("export-status", "Combine your files to preview and download the result.", "info");
+    } else {
+      setStatus("export-status", `Your combined file is ready: ${state.merge.previewRows.length} row(s), ${state.merge.previewColumns.length} column(s). Choose a format and download it.`, "info");
+    }
+    return;
+  }
   state.merge.exportRows = state.merge.exportRows.filter((row) => row.output_name || row.source !== "(blank)");
   const outputNames = state.merge.exportRows.map((row) => String(row.output_name || "").trim()).filter(Boolean);
   const duplicateNames = outputNames.filter((name, index) => outputNames.indexOf(name) !== index);
@@ -629,8 +640,10 @@ function updateMergeModeUI() {
   const isAppendMode = state.merge.combineMethod === "append";
   document.getElementById("merge-key-options").classList.toggle("hidden", isAppendMode);
   document.getElementById("append-options").classList.toggle("hidden", !isAppendMode);
+  document.getElementById("merge-mapping-card").classList.toggle("hidden", isAppendMode);
   document.getElementById("download-unmatched").disabled = isAppendMode || !state.merge.unmatchedReports.length;
   renderFileCards();
+  updateExportRows();
 }
 function syncBaseRoleOptions() {
   const select = document.getElementById("base-role");
@@ -715,7 +728,6 @@ function runMerge() {
       state.merge.notes = notes;
       state.merge.unmatchedReports = [];
       renderMergeDiagnostics(); renderMergeNotes();
-      if (!state.merge.exportRows.length) buildDefaultOutputRows(document.getElementById("output-columns-count").value);
       updateExportRows();
       updateMergeModeUI();
       setStatus("merge-status", `Combined ${state.merge.mergedRows.length} row(s).`, "info");

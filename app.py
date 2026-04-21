@@ -518,10 +518,10 @@ if app_mode == "Caller AI":
 
 st.markdown("### 1) Upload files")
 combine_method = st.radio(
-    "How should these files be combined?",
-    options=["Merge by keys", "Append rows"],
+    "Combine method",
+    options=["Match by keys", "Combine rows"],
     horizontal=True,
-    help="Use key-based merge when files share join columns. Use append rows when files have similar columns and should be stacked into one dataset.",
+    help="Use key matching when files share join columns. Use combine rows when files have the same layout and should be stacked into one file.",
 )
 uploaded_files = st.file_uploader(
     "Upload files",
@@ -549,7 +549,7 @@ for idx, uploaded in enumerate(uploaded_files):
         st.error(f"Failed to read '{uploaded.name}'. Error: {exc}")
         st.stop()
 
-    if combine_method == "Merge by keys":
+    if combine_method == "Match by keys":
         default_role = f"File{idx + 1}"
         role = st.text_input(
             f"Role name ({uploaded.name})",
@@ -591,7 +591,7 @@ for idx, uploaded in enumerate(uploaded_files):
 download_base_name = "combined_output"
 download_label_prefix = "Download Combined/Transformed"
 
-if combine_method == "Merge by keys":
+if combine_method == "Match by keys":
     roles = [entry["role"] for entry in file_entries]
     if len(set(roles)) != len(roles):
         st.error("Role names must be unique.")
@@ -601,7 +601,7 @@ if combine_method == "Merge by keys":
         st.stop()
 
     st.divider()
-    st.subheader("2) Merge")
+    st.subheader("2) Merge Files")
     base_role_default = template_defaults.get("base_role", roles[0])
     if base_role_default not in roles:
         base_role_default = roles[0]
@@ -650,24 +650,24 @@ if combine_method == "Merge by keys":
     st.success(f"Merged rows: {len(merged):,} | Columns: {merged.shape[1]:,}")
     st.dataframe(merged.head(preview_rows), use_container_width=True)
     download_base_name = safe_filename(base_role)
-    download_label_prefix = "Download Merged/Transformed"
+    download_label_prefix = "Download Merged File"
 else:
     st.divider()
-    st.subheader("2) Combine")
+    st.subheader("2) Combine Files")
     schema_mode = st.selectbox(
-        "Schema handling",
+        "Schema rule",
         options=["Strict same columns", "Union columns"],
         index=0,
         help="Strict mode requires the same columns in every file. Union mode keeps all columns found across the upload set.",
     )
     add_source_file = st.checkbox(
-        "Add source file column",
+        "Keep source file name",
         value=True,
         help="Adds the original file name to each row in the combined output.",
     )
     source_column_name = "SourceFile"
     if add_source_file:
-        source_column_name = st.text_input("Source file column name", value="SourceFile").strip() or "SourceFile"
+        source_column_name = st.text_input("Source file column", value="SourceFile").strip() or "SourceFile"
 
     try:
         combine_result = combine_dataframes(
@@ -684,12 +684,35 @@ else:
     st.subheader("Diagnostics")
     st.dataframe(combine_result["diagnostics"], use_container_width=True)
     if combine_result["notes"]:
-        st.info("Combine notes:\n\n- " + "\n- ".join(combine_result["notes"]))
+        st.info("Notes:\n\n- " + "\n- ".join(combine_result["notes"]))
 
     st.success(f"Combined rows: {len(merged):,} | Columns: {merged.shape[1]:,}")
     st.dataframe(merged.head(preview_rows), use_container_width=True)
     first_base_name = uploaded_files[0].name.rsplit(".", 1)[0] if uploaded_files else "combined_output"
     download_base_name = safe_filename(f"{first_base_name}_combined")
+    st.divider()
+    st.subheader("3) Download")
+    merged_output_type = st.selectbox("Export format", options=SUPPORTED_OUTPUT_TYPES, index=SUPPORTED_OUTPUT_TYPES.index("xlsx"))
+    merged_json_orient = render_json_options("combined_direct") if merged_output_type == "json" else "records"
+    merged_xml_options = render_xml_options("combined_direct") if merged_output_type == "xml" else {"root": "rows", "row": "row"}
+    try:
+        render_download_button(
+            df=merged,
+            base_name=download_base_name,
+            output_type=merged_output_type,
+            delimiter=delimiter if merged_output_type != "tsv" else "\t",
+            encoding=encoding_map[encoding_label],
+            quoting=quoting,
+            escapechar_enabled=escapechar_enabled,
+            date_format=date_format,
+            json_orient=merged_json_orient,
+            xml_root=merged_xml_options["root"],
+            xml_row=merged_xml_options["row"],
+            label_prefix="Download Combined File",
+        )
+    except Exception as exc:
+        st.error(f"Failed to create combined export. Error: {exc}")
+    st.stop()
 
 st.divider()
 st.subheader("3) Build export columns")
@@ -788,7 +811,7 @@ try:
 except Exception as exc:
     st.error(f"Failed to create combined export. Error: {exc}")
 
-if combine_method == "Merge by keys":
+if combine_method == "Match by keys":
     st.divider()
     st.subheader("5) Save mapping template")
     template_payload = build_template_payload(
