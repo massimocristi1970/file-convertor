@@ -919,15 +919,39 @@ function switchMode(mode) {
     button.classList.toggle("btn-secondary", !active);
   });
 }
+function pickBestKeyCol(candidates) {
+  if (!candidates.length) return "";
+  const exactId = candidates.find((col) => /^id$/i.test(String(col).trim()));
+  if (exactId) return exactId;
+  const idSuffix = candidates.find((col) => /id$/i.test(String(col).trim().replace(/[^a-z0-9]/gi, "")));
+  if (idSuffix) return idSuffix;
+  const keyLike = candidates.find((col) => /(key|code|ref|reference|number)$/i.test(String(col).trim().replace(/[^a-z0-9]/gi, "")));
+  return keyLike || candidates[0];
+}
 function inferDefaultKeyCols(newFileColumns) {
   const existing = state.merge.files.find((entry) => entry.keyCols && entry.keyCols.length);
   if (existing && existing.keyCols.every((col) => newFileColumns.includes(col))) return [...existing.keyCols];
   const newSet = new Set(newFileColumns);
   for (const entry of state.merge.files) {
     const shared = uniqueColumns(entry.rows).filter((col) => newSet.has(col));
-    if (shared.length) return [shared[0]];
+    if (shared.length) return [pickBestKeyCol(shared)];
   }
-  return [newFileColumns[0] || ""].filter(Boolean);
+  return [pickBestKeyCol(newFileColumns)].filter(Boolean);
+}
+function harmoniseMergeKeyCols() {
+  if (state.merge.files.length < 2) return;
+  const columnLists = state.merge.files.map((entry) => uniqueColumns(entry.rows));
+  const columnSets = columnLists.map((cols) => new Set(cols));
+  const sharedAcrossAll = columnLists[0].filter((col) => columnSets.every((s) => s.has(col)));
+  if (!sharedAcrossAll.length) return;
+  const best = pickBestKeyCol(sharedAcrossAll);
+  state.merge.files.forEach((entry, index) => {
+    const entryCols = columnLists[index];
+    const current = entry.keyCols || [];
+    const currentValid = current.length && current.every((col) => entryCols.includes(col));
+    const currentSharedByAll = currentValid && current.every((col) => columnSets.every((s) => s.has(col)));
+    if (!currentSharedByAll) entry.keyCols = [best];
+  });
 }
 async function handleMergeFiles() {
   const files = Array.from(document.getElementById("merge-files").files || []);
@@ -940,6 +964,7 @@ async function handleMergeFiles() {
       state.merge.files.push({ fileName: file.name, role: `File${state.merge.files.length + 1}`, rows: parsed.rows, keyCols: inferDefaultKeyCols(columns), duplicateStrategy: "Keep first" });
     } catch (error) { setStatus("merge-status", `${file.name}: ${error.message}`, "danger"); }
   }
+  harmoniseMergeKeyCols();
   renderFileCards();
   resetMergeResults();
 }
