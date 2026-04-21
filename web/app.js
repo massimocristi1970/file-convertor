@@ -913,6 +913,16 @@ function switchMode(mode) {
     button.classList.toggle("btn-secondary", !active);
   });
 }
+function inferDefaultKeyCols(newFileColumns) {
+  const existing = state.merge.files.find((entry) => entry.keyCols && entry.keyCols.length);
+  if (existing && existing.keyCols.every((col) => newFileColumns.includes(col))) return [...existing.keyCols];
+  const newSet = new Set(newFileColumns);
+  for (const entry of state.merge.files) {
+    const shared = uniqueColumns(entry.rows).filter((col) => newSet.has(col));
+    if (shared.length) return [shared[0]];
+  }
+  return [newFileColumns[0] || ""].filter(Boolean);
+}
 async function handleMergeFiles() {
   const files = Array.from(document.getElementById("merge-files").files || []);
   if (!files.length) return;
@@ -920,7 +930,8 @@ async function handleMergeFiles() {
     const file = files[index];
     try {
       const parsed = await parseFile(file, { delimiter: "auto", headerRow: 1 });
-      state.merge.files.push({ fileName: file.name, role: `File${state.merge.files.length + 1}`, rows: parsed.rows, keyCols: [uniqueColumns(parsed.rows)[0] || ""].filter(Boolean), duplicateStrategy: "Keep first" });
+      const columns = uniqueColumns(parsed.rows);
+      state.merge.files.push({ fileName: file.name, role: `File${state.merge.files.length + 1}`, rows: parsed.rows, keyCols: inferDefaultKeyCols(columns), duplicateStrategy: "Keep first" });
     } catch (error) { setStatus("merge-status", `${file.name}: ${error.message}`, "danger"); }
   }
   renderFileCards();
