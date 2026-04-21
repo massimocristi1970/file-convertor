@@ -213,11 +213,16 @@ const DATE_EXPORT_COLUMN_KEYS = new Set(Array.from(DATE_EXPORT_COLUMNS).map((nam
 function isTargetDateColumn(columnName) { return DATE_EXPORT_COLUMN_KEYS.has(normaliseLabel(columnName)); }
 function parseExportDateValue(value) {
   if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || value < 1 || value > 60000) return null;
+    return new Date(Date.UTC(1899, 11, 30) + Math.round(value * 86400000));
+  }
   const text = String(value ?? "").trim();
   if (!text) return null;
   if (/^-?\d+(?:\.\d+)?$/.test(text)) {
     const serial = Number(text);
     if (serial >= 1 && serial <= 60000) return new Date(Date.UTC(1899, 11, 30) + Math.round(serial * 86400000));
+    return null;
   }
   const slashMatch = text.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
   if (slashMatch) {
@@ -290,10 +295,15 @@ function parseWorkbookSheet(workbook, sheetName) {
       const cell = worksheet[XLSX.utils.encode_cell({ r: row, c: col })];
       let value = "";
       if (cell) {
-        const treatAsDate = dateColumns.has(header) || isTargetDateColumn(header) || isWorksheetDateCell(cell);
-        if (treatAsDate) {
-          value = parseExportDateValue(cell.v) || parseExportDateValue(cell.w) || "";
-          if (value) dateColumns.add(header);
+        const namedDateCol = dateColumns.has(header) || isTargetDateColumn(header);
+        if (namedDateCol) {
+          const dateVal = parseExportDateValue(cell.v) || parseExportDateValue(cell.w);
+          if (dateVal) {
+            value = dateVal;
+            dateColumns.add(header);
+          } else if (cell.v !== undefined && cell.v !== null) {
+            value = cell.v;
+          }
         } else if (cell.v !== undefined && cell.v !== null) {
           value = cell.v;
         }
