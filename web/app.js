@@ -21,9 +21,17 @@ const state = {
     template: null,
     unmatchedReports: [],
     previewRows: [],
+    previewColumns: []
+  },
+  combine: {
+    files: [],
+    combinedRows: [],
+    combinedColumns: [],
+    diagnostics: [],
+    notes: [],
+    previewRows: [],
     previewColumns: [],
     hasRun: false,
-    combineMethod: "merge",
     schemaMode: "strict",
     addSourceFile: true,
     sourceColumnName: "SourceFile"
@@ -572,48 +580,7 @@ function renderMergeNotes() {
   const el = document.getElementById("merge-notes");
   el.innerHTML = state.merge.notes.length ? state.merge.notes.map((note) => `<div>${note}</div>`).join("") : "No notes yet.";
 }
-function currentMergeWorkflowMeta() {
-  if (state.merge.combineMethod === "append") {
-    return {
-      title: "Combine Files",
-      description: "Append files together without replacing the original merge-and-map workflow.",
-      actionTitle: "Combine",
-      runLabel: "Combine Files",
-      exportTitle: "Download",
-      emptyStatus: "Add one or more files to combine.",
-      readyHint: "Run Combine Files to build the preview.",
-      exportHint: "Combine your files to preview and download the result."
-    };
-  }
-  return {
-    title: "Merge + Map + Transform",
-    description: "Match files by keys, map the output columns you want, and download a transformed export.",
-    actionTitle: "Merge",
-    runLabel: "Run Merge",
-    exportTitle: "Export",
-    emptyStatus: "Add one or more files to begin.",
-    readyHint: "Run Merge to build the preview.",
-    exportHint: "Run a merge and configure output columns to preview the export."
-  };
-}
-function mergeReadyMessage() {
-  const meta = currentMergeWorkflowMeta();
-  return state.merge.files.length ? `${state.merge.files.length} file(s) ready. ${meta.readyHint}` : meta.emptyStatus;
-}
-function updateMergeWorkflowChrome() {
-  const meta = currentMergeWorkflowMeta();
-  const isAppendMode = state.merge.combineMethod === "append";
-  document.getElementById("merge-mode-title").textContent = meta.title;
-  document.getElementById("merge-mode-description").textContent = meta.description;
-  document.getElementById("merge-action-title").textContent = meta.actionTitle;
-  document.getElementById("run-merge").textContent = meta.runLabel;
-  document.getElementById("merge-export-title").textContent = meta.exportTitle;
-  document.getElementById("merge-template-actions").classList.toggle("hidden", isAppendMode);
-  document.getElementById("download-unmatched").classList.toggle("hidden", isAppendMode);
-}
 function resetMergeResults() {
-  const meta = currentMergeWorkflowMeta();
-  state.merge.hasRun = false;
   state.merge.mergedRows = [];
   state.merge.mergedColumns = [];
   state.merge.diagnostics = [];
@@ -624,16 +591,34 @@ function resetMergeResults() {
   renderMergeDiagnostics();
   renderMergeNotes();
   renderTable("merge-table", [], 25, []);
-  setStatus("merge-status", mergeReadyMessage(), "info");
-  setStatus("export-status", meta.exportHint, "info");
+  setStatus("merge-status", state.merge.files.length ? `${state.merge.files.length} file(s) ready.` : "Add one or more files to begin.", "info");
+  setStatus("export-status", "Run a merge and configure output columns to preview the export.", "info");
 }
-function setMergeWorkflow(mode) {
-  const nextCombineMethod = mode === "combine" ? "append" : "merge";
-  const changed = state.merge.combineMethod !== nextCombineMethod;
-  state.merge.combineMethod = nextCombineMethod;
-  updateMergeWorkflowChrome();
-  if (changed) resetMergeResults();
-  updateMergeModeUI();
+function renderCombineDiagnostics() {
+  const container = document.getElementById("combine-diagnostics"); container.innerHTML = "";
+  state.combine.diagnostics.forEach((item) => {
+    const card = document.createElement("article"); card.className = "summary-card";
+    card.innerHTML = `<span class="summary-label">${item.File}</span><strong class="summary-value summary-value--primary">${item.Rows}</strong><div>Columns: ${item.Columns}</div>`;
+    container.appendChild(card);
+  });
+}
+function renderCombineNotes() {
+  const el = document.getElementById("combine-notes");
+  el.innerHTML = state.combine.notes.length ? state.combine.notes.map((note) => `<div>${note}</div>`).join("") : "No notes yet.";
+}
+function resetCombineResults() {
+  state.combine.hasRun = false;
+  state.combine.combinedRows = [];
+  state.combine.combinedColumns = [];
+  state.combine.diagnostics = [];
+  state.combine.notes = [];
+  state.combine.previewRows = [];
+  state.combine.previewColumns = [];
+  renderCombineDiagnostics();
+  renderCombineNotes();
+  renderTable("combine-table", [], 25, []);
+  setStatus("combine-status", state.combine.files.length ? `${state.combine.files.length} file(s) ready. Run Combine Files to build the preview.` : "Add one or more files to begin.", "info");
+  setStatus("combine-export-status", "Combine your files to preview and download the result.", "info");
 }
 function renderMappingRows() {
   const list = document.getElementById("mapping-list"); list.innerHTML = "";
@@ -699,32 +684,6 @@ function renderCallerAiParamInputs(row, index) {
   return "";
 }
 function updateExportRows() {
-  const meta = currentMergeWorkflowMeta();
-  if (state.merge.combineMethod === "append") {
-    if (!state.merge.hasRun) {
-      state.merge.previewRows = [];
-      state.merge.previewColumns = [];
-      renderTable("merge-table", [], 25, []);
-      setStatus("export-status", meta.exportHint, "info");
-      return;
-    }
-    state.merge.previewRows = state.merge.mergedRows || [];
-    state.merge.previewColumns = state.merge.mergedColumns || [];
-    renderTable("merge-table", state.merge.previewRows, 25, state.merge.previewColumns);
-    if (!state.merge.previewColumns.length) {
-      setStatus("export-status", "Combine your files to preview and download the result.", "info");
-    } else {
-      setStatus("export-status", `Your combined file is ready: ${state.merge.previewRows.length} row(s), ${state.merge.previewColumns.length} column(s). Choose a format and download it.`, "info");
-    }
-    return;
-  }
-  if (!state.merge.hasRun) {
-    state.merge.previewRows = [];
-    state.merge.previewColumns = [];
-    renderTable("merge-table", [], 25, []);
-    setStatus("export-status", meta.exportHint, "info");
-    return;
-  }
   state.merge.exportRows = state.merge.exportRows.filter((row) => row.output_name || row.source !== "(blank)");
   const outputNames = state.merge.exportRows.map((row) => String(row.output_name || "").trim()).filter(Boolean);
   const duplicateNames = outputNames.filter((name, index) => outputNames.indexOf(name) !== index);
@@ -762,6 +721,23 @@ function updateExportRows() {
     setStatus("export-status", `Some mapped source columns were not found after the combined dataset was built: ${missingSources.join(", ")}`, "danger");
   } else {
     setStatus("export-status", `Export preview ready: ${exportData.length} row(s), ${previewColumns.length} column(s).`, "info");
+  }
+}
+function updateCombineExportRows() {
+  if (!state.combine.hasRun) {
+    state.combine.previewRows = [];
+    state.combine.previewColumns = [];
+    renderTable("combine-table", [], 25, []);
+    setStatus("combine-export-status", "Combine your files to preview and download the result.", "info");
+    return;
+  }
+  state.combine.previewRows = state.combine.combinedRows || [];
+  state.combine.previewColumns = state.combine.combinedColumns || [];
+  renderTable("combine-table", state.combine.previewRows, 25, state.combine.previewColumns);
+  if (!state.combine.previewColumns.length) {
+    setStatus("combine-export-status", "Combine your files to preview and download the result.", "info");
+  } else {
+    setStatus("combine-export-status", `Your combined file is ready: ${state.combine.previewRows.length} row(s), ${state.combine.previewColumns.length} column(s). Choose a format and download it.`, "info");
   }
 }
 function updateCallerAiExportRows() {
@@ -824,23 +800,18 @@ function renderFileCards() {
   const list = document.getElementById("merge-file-list"); list.innerHTML = "";
   state.merge.files.forEach((entry, index) => {
     const card = document.createElement("div"); card.className = "file-card";
-    const mergeControls = state.merge.combineMethod === "merge"
-      ? `<div class="form-grid form-grid--three"><div class="form-group"><label>Role</label><input data-file-field="role" data-index="${index}" value="${escapeHtml(entry.role)}"></div><div class="form-group"><label>Merge key columns</label><input data-file-field="keyCols" data-index="${index}" value="${escapeHtml(entry.keyCols.join(", "))}"></div><div class="form-group"><label>Duplicate strategy</label><select data-file-field="duplicateStrategy" data-index="${index}"><option ${entry.duplicateStrategy === "Keep first" ? "selected" : ""}>Keep first</option><option ${entry.duplicateStrategy === "Keep last" ? "selected" : ""}>Keep last</option><option ${entry.duplicateStrategy === "Aggregate values" ? "selected" : ""}>Aggregate values</option><option ${entry.duplicateStrategy === "Error" ? "selected" : ""}>Error</option></select></div></div>`
-      : `<div class="surface-panel">Rows from this file will be appended into the combined dataset in upload order.</div>`;
-    card.innerHTML = `<div class="file-card-head"><div><h3>${escapeHtml(entry.fileName)}</h3><div>${entry.rows.length} rows | ${uniqueColumns(entry.rows).length} columns</div></div><button class="btn btn-ghost" data-delete-file="${index}" type="button">Remove</button></div>${mergeControls}`;
+    card.innerHTML = `<div class="file-card-head"><div><h3>${escapeHtml(entry.fileName)}</h3><div>${entry.rows.length} rows | ${uniqueColumns(entry.rows).length} columns</div></div><button class="btn btn-ghost" data-delete-file="${index}" type="button">Remove</button></div><div class="form-grid form-grid--three"><div class="form-group"><label>Role</label><input data-file-field="role" data-index="${index}" value="${escapeHtml(entry.role)}"></div><div class="form-group"><label>Merge key columns</label><input data-file-field="keyCols" data-index="${index}" value="${escapeHtml(entry.keyCols.join(", "))}"></div><div class="form-group"><label>Duplicate strategy</label><select data-file-field="duplicateStrategy" data-index="${index}"><option ${entry.duplicateStrategy === "Keep first" ? "selected" : ""}>Keep first</option><option ${entry.duplicateStrategy === "Keep last" ? "selected" : ""}>Keep last</option><option ${entry.duplicateStrategy === "Aggregate values" ? "selected" : ""}>Aggregate values</option><option ${entry.duplicateStrategy === "Error" ? "selected" : ""}>Error</option></select></div></div>`;
     list.appendChild(card);
   });
   syncBaseRoleOptions();
 }
-function updateMergeModeUI() {
-  const isAppendMode = state.merge.combineMethod === "append";
-  updateMergeWorkflowChrome();
-  document.getElementById("merge-key-options").classList.toggle("hidden", isAppendMode);
-  document.getElementById("append-options").classList.toggle("hidden", !isAppendMode);
-  document.getElementById("merge-mapping-card").classList.toggle("hidden", isAppendMode);
-  document.getElementById("download-unmatched").disabled = isAppendMode || !state.merge.unmatchedReports.length;
-  renderFileCards();
-  updateExportRows();
+function renderCombineFileCards() {
+  const list = document.getElementById("combine-file-list"); list.innerHTML = "";
+  state.combine.files.forEach((entry, index) => {
+    const card = document.createElement("div"); card.className = "file-card";
+    card.innerHTML = `<div class="file-card-head"><div><h3>${escapeHtml(entry.fileName)}</h3><div>${entry.rows.length} rows | ${uniqueColumns(entry.rows).length} columns</div></div><button class="btn btn-ghost" data-combine-delete-file="${index}" type="button">Remove</button></div><div class="surface-panel">Rows from this file will be appended into the combined dataset in upload order.</div>`;
+    list.appendChild(card);
+  });
 }
 function syncBaseRoleOptions() {
   const select = document.getElementById("base-role");
@@ -891,8 +862,8 @@ function switchMode(mode) {
   state.mode = mode;
   document.getElementById("simple-mode").classList.toggle("hidden", mode !== "simple");
   document.getElementById("caller-ai-mode").classList.toggle("hidden", mode !== "caller-ai");
-  document.getElementById("merge-mode").classList.toggle("hidden", !["merge-map", "combine"].includes(mode));
-  if (mode === "merge-map" || mode === "combine") setMergeWorkflow(mode);
+  document.getElementById("merge-mode").classList.toggle("hidden", mode !== "merge");
+  document.getElementById("combine-mode").classList.toggle("hidden", mode !== "combine");
   document.querySelectorAll(".mode-tab").forEach((button) => {
     const active = button.dataset.mode === mode;
     button.classList.toggle("active", active);
@@ -912,26 +883,22 @@ async function handleMergeFiles() {
   renderFileCards();
   resetMergeResults();
 }
+async function handleCombineFiles() {
+  const files = Array.from(document.getElementById("combine-files").files || []);
+  if (!files.length) return;
+  for (let index = 0; index < files.length; index += 1) {
+    const file = files[index];
+    try {
+      const parsed = await parseFile(file, { delimiter: "auto", headerRow: 1 });
+      state.combine.files.push({ fileName: file.name, rows: parsed.rows });
+    } catch (error) { setStatus("combine-status", `${file.name}: ${error.message}`, "danger"); }
+  }
+  renderCombineFileCards();
+  resetCombineResults();
+}
 function runMerge() {
   try {
     if (!state.merge.files.length) throw new Error("Add files before running a merge.");
-    if (state.merge.combineMethod === "append") {
-      state.merge.diagnostics = state.merge.files.map(appendDiagnosticsForFile);
-      const schemaMode = document.getElementById("append-schema-mode").value;
-      const addSourceFile = document.getElementById("append-source-file").checked;
-      const sourceColumnName = document.getElementById("append-source-column").value || "SourceFile";
-      const { combinedRows, combineColumns, notes } = appendRows(state.merge.files, schemaMode, addSourceFile, sourceColumnName);
-      state.merge.mergedRows = combinedRows;
-      state.merge.mergedColumns = combineColumns;
-      state.merge.notes = notes;
-      state.merge.unmatchedReports = [];
-      state.merge.hasRun = true;
-      renderMergeDiagnostics(); renderMergeNotes();
-      updateExportRows();
-      updateMergeModeUI();
-      setStatus("merge-status", `Combined ${state.merge.mergedRows.length} row(s).`, "info");
-      return;
-    }
     state.merge.diagnostics = state.merge.files.map(diagnosticsForFile);
     const processed = Object.fromEntries(state.merge.files.map((entry) => [entry.role, { ...entry, rows: prepareRows(entry) }]));
     const baseRole = document.getElementById("base-role").value || state.merge.files[0].role;
@@ -953,13 +920,28 @@ function runMerge() {
     state.merge.mergedColumns = uniqueColumns(state.merge.mergedRows);
     state.merge.notes = notes;
     state.merge.unmatchedReports = unmatchedReports;
-    state.merge.hasRun = true;
     renderMergeDiagnostics(); renderMergeNotes();
     if (!state.merge.exportRows.length) buildDefaultOutputRows(document.getElementById("output-columns-count").value);
     updateExportRows();
-    updateMergeModeUI();
     setStatus("merge-status", `Merged ${state.merge.mergedRows.length} row(s).`, "info");
   } catch (error) { setStatus("merge-status", error.message, "danger"); }
+}
+function runCombine() {
+  try {
+    if (!state.combine.files.length) throw new Error("Add files before combining them.");
+    state.combine.diagnostics = state.combine.files.map(appendDiagnosticsForFile);
+    state.combine.schemaMode = document.getElementById("append-schema-mode").value;
+    state.combine.addSourceFile = document.getElementById("append-source-file").checked;
+    state.combine.sourceColumnName = document.getElementById("append-source-column").value || "SourceFile";
+    const { combinedRows, combineColumns, notes } = appendRows(state.combine.files, state.combine.schemaMode, state.combine.addSourceFile, state.combine.sourceColumnName);
+    state.combine.combinedRows = combinedRows;
+    state.combine.combinedColumns = combineColumns;
+    state.combine.notes = notes;
+    state.combine.hasRun = true;
+    renderCombineDiagnostics(); renderCombineNotes();
+    updateCombineExportRows();
+    setStatus("combine-status", `Combined ${state.combine.combinedRows.length} row(s).`, "info");
+  } catch (error) { setStatus("combine-status", error.message, "danger"); }
 }
 function bindEvents() {
   document.querySelectorAll(".mode-tab").forEach((button) => button.addEventListener("click", () => switchMode(button.dataset.mode)));
@@ -986,12 +968,10 @@ function bindEvents() {
     renderCallerAiMappingRows();
     updateCallerAiExportRows();
   });
-  document.getElementById("append-source-file").addEventListener("change", (event) => {
-    state.merge.addSourceFile = event.target.checked;
-    document.getElementById("append-source-column").disabled = !event.target.checked;
-  });
   document.getElementById("merge-files").addEventListener("change", handleMergeFiles);
+  document.getElementById("combine-files").addEventListener("change", handleCombineFiles);
   document.getElementById("run-merge").addEventListener("click", runMerge);
+  document.getElementById("run-combine").addEventListener("click", runCombine);
   document.getElementById("build-output-rows").addEventListener("click", () => buildDefaultOutputRows(document.getElementById("output-columns-count").value));
   document.getElementById("download-merged").addEventListener("click", () => {
     const outputNames = state.merge.previewColumns || [];
@@ -1001,21 +981,31 @@ function bindEvents() {
     }
     exportRows(state.merge.previewRows || [], document.getElementById("merge-export-name").value || "merged_output", document.getElementById("merge-output-type").value, outputNames);
   });
-  document.getElementById("download-template").addEventListener("click", () => {
-    if (state.merge.combineMethod !== "merge") {
-      setStatus("merge-status", "Mapping templates are only available for key-based merge mode right now.", "info");
+  document.getElementById("download-combined").addEventListener("click", () => {
+    const outputNames = state.combine.previewColumns || [];
+    if (!outputNames.length) {
+      setStatus("combine-export-status", "There is no combined file to download yet.", "danger");
       return;
     }
-    downloadBlob("mapping_template.json", JSON.stringify(outputTemplatePayload(), null, 2), "application/json");
+    exportRows(state.combine.previewRows || [], document.getElementById("combine-export-name").value || "combined_output", document.getElementById("combine-output-type").value, outputNames);
   });
+  document.getElementById("download-template").addEventListener("click", () => downloadBlob("mapping_template.json", JSON.stringify(outputTemplatePayload(), null, 2), "application/json"));
   document.getElementById("download-unmatched").addEventListener("click", downloadUnmatchedZip);
+  document.getElementById("append-source-file").addEventListener("change", (event) => {
+    state.combine.addSourceFile = event.target.checked;
+    document.getElementById("append-source-column").disabled = !event.target.checked;
+    resetCombineResults();
+  });
+  document.getElementById("append-schema-mode").addEventListener("change", (event) => {
+    state.combine.schemaMode = event.target.value;
+    resetCombineResults();
+  });
+  document.getElementById("append-source-column").addEventListener("input", (event) => {
+    state.combine.sourceColumnName = event.target.value;
+    resetCombineResults();
+  });
   document.getElementById("template-file").addEventListener("change", async (event) => {
     const file = event.target.files[0]; if (!file) return;
-    if (state.merge.combineMethod !== "merge") {
-      setStatus("merge-status", "Templates can only be loaded in key-based merge mode right now.", "info");
-      event.target.value = "";
-      return;
-    }
     try {
       const template = JSON.parse(await file.text());
       state.merge.template = template;
@@ -1025,7 +1015,7 @@ function bindEvents() {
         entry.keyCols = template.merge_keys_by_role?.[entry.role] || entry.keyCols;
         entry.duplicateStrategy = template.duplicate_strategy_by_role?.[entry.role] || entry.duplicateStrategy;
       });
-      renderFileCards(); renderMappingRows(); resetMergeResults(); setStatus("merge-status", `Template loaded. ${currentMergeWorkflowMeta().readyHint}`, "info");
+      renderFileCards(); renderMappingRows(); resetMergeResults(); setStatus("merge-status", "Template loaded.", "info");
     } catch (error) { setStatus("merge-status", error.message, "danger"); }
   });
   document.addEventListener("input", (event) => {
@@ -1034,7 +1024,7 @@ function bindEvents() {
       const entry = state.merge.files[Number(target.dataset.index)];
       if (target.dataset.fileField === "role") entry.role = target.value.trim() || `File${Number(target.dataset.index) + 1}`;
       if (target.dataset.fileField === "keyCols") entry.keyCols = parseColumns(target.value);
-      renderFileCards();
+      renderFileCards(); resetMergeResults();
     }
     if (target.matches("[data-field]")) {
       const row = state.merge.exportRows[Number(target.dataset.index)];
@@ -1063,7 +1053,7 @@ function bindEvents() {
   });
   document.addEventListener("change", (event) => {
     const target = event.target;
-    if (target.matches("select[data-file-field='duplicateStrategy']")) state.merge.files[Number(target.dataset.index)].duplicateStrategy = target.value;
+    if (target.matches("select[data-file-field='duplicateStrategy']")) { state.merge.files[Number(target.dataset.index)].duplicateStrategy = target.value; resetMergeResults(); }
     if (target.matches("[data-param]") && target.type === "checkbox") {
       const row = state.merge.exportRows[Number(target.dataset.index)]; row.params ||= {}; row.params[target.dataset.param] = target.checked; updateExportRows();
     }
@@ -1076,6 +1066,9 @@ function bindEvents() {
     if (target.matches("[data-delete-file]")) {
       state.merge.files.splice(Number(target.dataset.deleteFile), 1); renderFileCards(); resetMergeResults();
     }
+    if (target.matches("[data-combine-delete-file]")) {
+      state.combine.files.splice(Number(target.dataset.combineDeleteFile), 1); renderCombineFileCards(); resetCombineResults();
+    }
     if (target.matches("[data-remove-index]")) {
       state.merge.exportRows.splice(Number(target.dataset.removeIndex), 1); renderMappingRows(); updateExportRows();
     }
@@ -1086,7 +1079,10 @@ function bindEvents() {
 }
 
 bindEvents();
-updateMergeModeUI();
+renderFileCards();
+renderCombineFileCards();
+resetMergeResults();
+resetCombineResults();
 document.getElementById("append-source-column").disabled = !document.getElementById("append-source-file").checked;
 
 

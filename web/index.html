@@ -20,7 +20,7 @@
           <div class="inline-actions mode-switch">
             <button class="btn mode-tab active" data-mode="simple" type="button">Simple Convert</button>
             <button class="btn btn-secondary mode-tab" data-mode="caller-ai" type="button">Caller AI</button>
-            <button class="btn btn-secondary mode-tab" data-mode="merge-map" type="button">Merge + Map + Transform</button>
+            <button class="btn btn-secondary mode-tab" data-mode="merge" type="button">Merge + Map + Transform</button>
             <button class="btn btn-secondary mode-tab" data-mode="combine" type="button">Combine Files</button>
           </div>
         </div>
@@ -165,17 +165,14 @@
       <section class="card stack hidden" id="merge-mode">
         <div class="section-header">
           <div>
-            <h2 id="merge-mode-title">Merge + Map + Transform</h2>
-            <p id="merge-mode-description">Match files by keys, map the output columns you want, and download a transformed export.</p>
+            <h2>Merge + Map + Transform</h2>
           </div>
           <div class="inline-actions">
             <input id="merge-files" type="file" accept=".xlsx,.csv,.tsv,.txt,.json,.xml" multiple hidden>
             <label class="btn" for="merge-files">Add Files</label>
-            <div class="inline-actions" id="merge-template-actions">
-              <input id="template-file" type="file" accept=".json" hidden>
-              <label class="btn btn-secondary" for="template-file">Load Template</label>
-              <button class="btn btn-ghost" id="download-template" type="button">Download Template</button>
-            </div>
+            <input id="template-file" type="file" accept=".json" hidden>
+            <label class="btn btn-secondary" for="template-file">Load Template</label>
+            <button class="btn btn-ghost" id="download-template" type="button">Download Template</button>
           </div>
         </div>
         <div class="alert alert-info" id="merge-status">Add one or more files to begin.</div>
@@ -184,10 +181,10 @@
         <div class="card inner-card stack">
           <div class="section-header">
             <div>
-              <h3 id="merge-action-title">Merge</h3>
+              <h3>Merge</h3>
             </div>
           </div>
-          <div class="form-grid form-grid--three" id="merge-key-options">
+          <div class="form-grid form-grid--three">
             <div class="form-group">
               <label for="base-role">Base role</label>
               <select id="base-role"></select>
@@ -202,23 +199,6 @@
             </div>
             <label class="checkbox inline-checkbox"><input id="exclude-unmatched" type="checkbox" checked><span>Exclude unmatched</span></label>
           </div>
-          <div class="form-grid form-grid--three hidden" id="append-options">
-            <div class="form-group">
-              <label for="append-schema-mode">Schema rule</label>
-              <select id="append-schema-mode">
-                <option value="strict">Strict same columns</option>
-                <option value="union">Union columns</option>
-              </select>
-            </div>
-            <label class="checkbox inline-checkbox">
-              <input id="append-source-file" type="checkbox" checked>
-              <span>Keep source file name</span>
-            </label>
-            <div class="form-group">
-              <label for="append-source-column">Source file column</label>
-              <input id="append-source-column" type="text" value="SourceFile">
-            </div>
-          </div>
           <div class="inline-actions">
             <button class="btn" id="run-merge" type="button">Run Merge</button>
             <button class="btn btn-secondary" id="download-unmatched" type="button">Download Unmatched ZIP</button>
@@ -227,7 +207,7 @@
           <div class="surface-panel" id="merge-notes"></div>
         </div>
 
-        <div class="card inner-card stack" id="merge-mapping-card">
+        <div class="card inner-card stack">
           <div class="section-header">
             <div>
               <h3>Output Mapping</h3>
@@ -240,10 +220,10 @@
           <div class="mapping-list stack" id="mapping-list"></div>
         </div>
 
-        <div class="card inner-card stack" id="merge-export-card">
+        <div class="card inner-card stack">
           <div class="section-header">
             <div>
-              <h3 id="merge-export-title">Export</h3>
+              <h3>Export</h3>
             </div>
           </div>
           <div class="form-grid form-grid--two">
@@ -264,11 +244,91 @@
             </div>
           </div>
           <div class="inline-actions">
-            <button class="btn" id="download-merged" type="button">Download File</button>
+            <button class="btn" id="download-merged" type="button">Download Output</button>
           </div>
-          <div class="alert alert-info" id="export-status">Combine your files to preview and download the result.</div>
+          <div class="alert alert-info" id="export-status">Run a merge and configure output columns to preview the export.</div>
           <div class="table-wrap">
             <table id="merge-table">
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="card stack hidden" id="combine-mode">
+        <div class="section-header">
+          <div>
+            <h2>Combine Files</h2>
+            <p>Append files together as a separate workflow without replacing merge and mapping.</p>
+          </div>
+          <div class="inline-actions">
+            <input id="combine-files" type="file" accept=".xlsx,.csv,.tsv,.txt,.json,.xml" multiple hidden>
+            <label class="btn" for="combine-files">Add Files</label>
+          </div>
+        </div>
+        <div class="alert alert-info" id="combine-status">Add one or more files to begin.</div>
+        <div class="file-list stack" id="combine-file-list"></div>
+
+        <div class="card inner-card stack">
+          <div class="section-header">
+            <div>
+              <h3>Combine</h3>
+            </div>
+          </div>
+          <div class="form-grid form-grid--three">
+            <div class="form-group">
+              <label for="append-schema-mode">Schema rule</label>
+              <select id="append-schema-mode">
+                <option value="strict">Strict same columns</option>
+                <option value="union">Union columns</option>
+              </select>
+            </div>
+            <label class="checkbox inline-checkbox">
+              <input id="append-source-file" type="checkbox" checked>
+              <span>Keep source file name</span>
+            </label>
+            <div class="form-group">
+              <label for="append-source-column">Source file column</label>
+              <input id="append-source-column" type="text" value="SourceFile">
+            </div>
+          </div>
+          <div class="inline-actions">
+            <button class="btn" id="run-combine" type="button">Combine Files</button>
+          </div>
+          <div class="stats-strip compact" id="combine-diagnostics"></div>
+          <div class="surface-panel" id="combine-notes"></div>
+        </div>
+
+        <div class="card inner-card stack">
+          <div class="section-header">
+            <div>
+              <h3>Download</h3>
+            </div>
+          </div>
+          <div class="form-grid form-grid--two">
+            <div class="form-group">
+              <label for="combine-output-type">Output format</label>
+              <select id="combine-output-type">
+                <option value="csv">CSV</option>
+                <option value="tsv">TSV</option>
+                <option value="txt">TXT</option>
+                <option value="xlsx">XLSX</option>
+                <option value="json">JSON</option>
+                <option value="xml">XML</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="combine-export-name">File name</label>
+              <input id="combine-export-name" type="text" value="combined_output">
+            </div>
+          </div>
+          <div class="inline-actions">
+            <button class="btn" id="download-combined" type="button">Download File</button>
+          </div>
+          <div class="alert alert-info" id="combine-export-status">Combine your files to preview and download the result.</div>
+          <div class="table-wrap">
+            <table id="combine-table">
               <thead></thead>
               <tbody></tbody>
             </table>
