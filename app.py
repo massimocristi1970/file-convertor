@@ -216,7 +216,7 @@ with st.sidebar:
     quoting_choice = st.selectbox("Quoting", ["Minimal (default)", "All fields", "Non-numeric", "None"], index=0)
     quoting = quoting_from_choice(quoting_choice)
     escapechar_enabled = st.checkbox("Enable escape character (\\)", value=(quoting_choice == "None"))
-    date_format = st.text_input("Date format", value="%Y-%m-%d")
+    date_format = st.text_input("Date format", value="%d/%m/%Y")
 
     st.divider()
     st.subheader("Data fidelity")

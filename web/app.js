@@ -187,6 +187,18 @@ function rowsToCsv(rows, delimiter, columnsOverride = []) {
 function uniqueColumns(rows) {
   return Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
 }
+function excelSerialToDate(serial) {
+  const wholeDays = Math.floor(Number(serial) || 0);
+  const fractionalDay = Number(serial) - wholeDays;
+  const date = new Date(Date.UTC(1899, 11, 30 + wholeDays));
+  const totalMs = Math.round(fractionalDay * 86400000);
+  return new Date(date.getTime() + totalMs);
+}
+function isWorksheetDateCell(cell) {
+  if (!cell) return false;
+  if (cell.t === "d" && cell.v instanceof Date) return true;
+  return cell.t === "n" && Boolean(cell.z) && typeof XLSX?.SSF?.is_date === "function" && XLSX.SSF.is_date(cell.z);
+}
 function looksLikeDateColumn(columnName) {
   const text = String(columnName || "").toLowerCase();
   return ["date", "dob", "birth", "expiry", "issued", "created", "updated"].some((token) => text.includes(token));
@@ -215,7 +227,13 @@ function parseExportDateValue(value) {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 function prepareRowsForXlsx(rows, columns) {
-  const dateColumns = columns.filter((column) => looksLikeDateColumn(column));
+  const dateColumns = columns.filter((column) => {
+    const values = rows.map((row) => row[column]).filter((value) => value !== "" && value !== null && value !== undefined);
+    if (!values.length) return false;
+    if (values.every((value) => value instanceof Date && !Number.isNaN(value.getTime()))) return true;
+    if (!looksLikeDateColumn(column)) return false;
+    return values.every((value) => parseExportDateValue(value));
+  });
   const preparedRows = rows.map((row) => {
     const out = {};
     columns.forEach((column) => {
@@ -230,14 +248,60 @@ function prepareRowsForXlsx(rows, columns) {
   });
   return { preparedRows, dateColumns };
 }
+function parseWorkbookSheet(workbook, sheetName) {
+  const worksheet = workbook.Sheets[sheetName];
+  const range = XLSX.utils.decode_range(worksheet["!ref"] || "A1:A1");
+  const headerRowIndex = range.s.r;
+  const headers = [];
+  const dateColumns = new Set();
+
+  for (let col = range.s.c; col <= range.e.c; col += 1) {
+    const headerCell = worksheet[XLSX.utils.encode_cell({ r: headerRowIndex, c: col })];
+    const headerValue = headerCell?.v ?? `Column_${col + 1}`;
+    headers.push(String(headerValue || `Column_${col + 1}`));
+  }
+
+  for (let col = range.s.c; col <= range.e.c; col += 1) {
+    for (let row = headerRowIndex + 1; row <= range.e.r; row += 1) {
+      const cell = worksheet[XLSX.utils.encode_cell({ r: row, c: col })];
+      if (isWorksheetDateCell(cell)) {
+        dateColumns.add(headers[col - range.s.c]);
+        break;
+      }
+    }
+  }
+
+  const rows = [];
+  for (let row = headerRowIndex + 1; row <= range.e.r; row += 1) {
+    const record = {};
+    let hasValue = false;
+    headers.forEach((header, index) => {
+      const col = range.s.c + index;
+      const cell = worksheet[XLSX.utils.encode_cell({ r: row, c: col })];
+      let value = "";
+      if (cell) {
+        if (dateColumns.has(header) && isWorksheetDateCell(cell)) {
+          value = cell.t === "d" && cell.v instanceof Date ? cell.v : excelSerialToDate(cell.v);
+        } else if (cell.v !== undefined && cell.v !== null) {
+          value = cell.v;
+        }
+      }
+      if (value !== "") hasValue = true;
+      record[header] = value;
+    });
+    if (hasValue) rows.push(record);
+  }
+
+  return { rows, dateColumns: Array.from(dateColumns) };
+}
 async function parseFile(file, options = {}) {
   const fileType = detectFileType(file.name);
   const headerRow = Number(options.headerRow || 1);
   const delimiter = options.delimiter || "auto";
   if (fileType === "xlsx") {
-    const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
-    const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-    return { fileType, rows: XLSX.utils.sheet_to_json(firstSheet, { defval: "" }), fileName: file.name };
+    const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true, cellNF: true });
+    const parsedSheet = parseWorkbookSheet(workbook, workbook.SheetNames[0]);
+    return { fileType, rows: parsedSheet.rows, fileName: file.name, dateColumns: parsedSheet.dateColumns };
   }
   const text = await file.text();
   if (fileType === "json") return { fileType, rows: parseJson(text), fileName: file.name };
@@ -261,7 +325,7 @@ async function exportRows(rows, fileName, type, columnsOverride = []) {
       for (let rowIndex = 0; rowIndex < preparedRows.length; rowIndex += 1) {
         const cellRef = XLSX.utils.encode_cell({ r: rowIndex + 1, c: colIndex });
         const cell = worksheet[cellRef];
-        if (cell && (cell.t === "d" || cell.v instanceof Date)) cell.z = "yyyy-mm-dd";
+        if (cell && (cell.t === "d" || cell.v instanceof Date)) cell.z = "dd/mm/yyyy";
       }
     });
     const workbook = XLSX.utils.book_new();
