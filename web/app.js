@@ -238,13 +238,7 @@ function formatValueForDownload(column, value, mode = "text") {
   return formatDateForDownload(value);
 }
 function prepareRowsForXlsx(rows, columns) {
-  const dateColumns = columns.filter((column) => {
-    if (!isTargetDateColumn(column)) return false;
-    const values = rows.map((row) => row[column]).filter((value) => value !== "" && value !== null && value !== undefined);
-    if (!values.length) return false;
-    if (values.every((value) => value instanceof Date && !Number.isNaN(value.getTime()))) return true;
-    return values.every((value) => parseExportDateValue(value));
-  });
+  const dateColumns = columns.filter((column) => isTargetDateColumn(column));
   const preparedRows = rows.map((row) => {
     const out = {};
     columns.forEach((column) => {
@@ -264,24 +258,16 @@ function parseWorkbookSheet(workbook, sheetName) {
   const range = XLSX.utils.decode_range(worksheet["!ref"] || "A1:A1");
   const headerRowIndex = range.s.r;
   const headers = [];
-  const dateColumns = new Set();
+  const dateColumns = new Set(headers.filter((header) => isTargetDateColumn(header)));
 
   for (let col = range.s.c; col <= range.e.c; col += 1) {
     const headerCell = worksheet[XLSX.utils.encode_cell({ r: headerRowIndex, c: col })];
     const headerValue = headerCell?.v ?? `Column_${col + 1}`;
     headers.push(String(headerValue || `Column_${col + 1}`));
   }
-
-  for (let col = range.s.c; col <= range.e.c; col += 1) {
-    for (let row = headerRowIndex + 1; row <= range.e.r; row += 1) {
-      const cell = worksheet[XLSX.utils.encode_cell({ r: row, c: col })];
-      const header = headers[col - range.s.c];
-      if (isTargetDateColumn(header) && isWorksheetDateCell(cell)) {
-        dateColumns.add(headers[col - range.s.c]);
-        break;
-      }
-    }
-  }
+  headers.forEach((header) => {
+    if (isTargetDateColumn(header)) dateColumns.add(header);
+  });
 
   const rows = [];
   for (let row = headerRowIndex + 1; row <= range.e.r; row += 1) {
@@ -292,8 +278,8 @@ function parseWorkbookSheet(workbook, sheetName) {
       const cell = worksheet[XLSX.utils.encode_cell({ r: row, c: col })];
       let value = "";
       if (cell) {
-        if (dateColumns.has(header) && isWorksheetDateCell(cell)) {
-          value = cell.t === "d" && cell.v instanceof Date ? cell.v : excelSerialToDate(cell.v);
+        if (dateColumns.has(header)) {
+          value = parseExportDateValue(cell.v) || "";
         } else if (cell.v !== undefined && cell.v !== null) {
           value = cell.v;
         }
@@ -311,7 +297,7 @@ async function parseFile(file, options = {}) {
   const headerRow = Number(options.headerRow || 1);
   const delimiter = options.delimiter || "auto";
   if (fileType === "xlsx") {
-    const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true, cellNF: true });
+    const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: false, cellNF: true });
     const parsedSheet = parseWorkbookSheet(workbook, workbook.SheetNames[0]);
     return { fileType, rows: parsedSheet.rows, fileName: file.name, dateColumns: parsedSheet.dateColumns };
   }
