@@ -580,7 +580,13 @@ function renderMergeNotes() {
   const el = document.getElementById("merge-notes");
   el.innerHTML = state.merge.notes.length ? state.merge.notes.map((note) => `<div>${note}</div>`).join("") : "No merge notes.";
 }
+function ensureMergeOutputRows() {
+  if (state.merge.exportRows.length) return;
+  const count = Number(document.getElementById("output-columns-count")?.value || 10);
+  state.merge.exportRows = Array.from({ length: count }, () => ({ source: "(blank)", transform: "None", params: {}, output_name: "" }));
+}
 function resetMergeResults() {
+  ensureMergeOutputRows();
   state.merge.mergedRows = [];
   state.merge.mergedColumns = [];
   state.merge.diagnostics = [];
@@ -590,6 +596,7 @@ function resetMergeResults() {
   state.merge.previewColumns = [];
   renderMergeDiagnostics();
   renderMergeNotes();
+  renderMappingRows();
   renderTable("merge-table", [], 25, []);
   setStatus("merge-status", state.merge.files.length ? `${state.merge.files.length} file(s) ready.` : "Add one or more files to begin.", "info");
   setStatus("export-status", "Run a merge and configure output columns to preview the export.", "info");
@@ -822,6 +829,7 @@ function syncBaseRoleOptions() {
 function buildDefaultOutputRows(count) {
   state.merge.exportRows = Array.from({ length: Number(count || 10) }, () => ({ source: "(blank)", transform: "None", params: {}, output_name: "" }));
   renderMappingRows();
+  updateExportRows();
 }
 async function handleSimpleFile() {
   const file = document.getElementById("simple-file").files[0];
