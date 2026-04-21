@@ -835,25 +835,35 @@ function buildDefaultOutputRows(count) {
   updateExportRows();
 }
 function updateMergeMappingField(target) {
-  const row = state.merge.exportRows[Number(target.dataset.index)];
+  const index = Number(target.dataset.index);
+  const row = state.merge.exportRows[index];
   if (!row) return;
+  const field = target.dataset.field;
   const previousSource = row.source;
-  row[target.dataset.field] = target.dataset.field === "transform" ? normaliseTransformName(target.value) : target.value;
-  if (target.dataset.field === "source") {
+  row[field] = field === "transform" ? normaliseTransformName(target.value) : target.value;
+  if (field === "source") {
     const trimmedOutputName = String(row.output_name || "").trim();
     if ((!trimmedOutputName || trimmedOutputName === previousSource) && target.value !== "(blank)") row.output_name = target.value;
     if (trimmedOutputName === previousSource && target.value === "(blank)") row.output_name = "";
+    const outputInput = document.querySelector(`#mapping-list input[data-field="output_name"][data-index="${index}"]`);
+    if (outputInput && outputInput.value !== (row.output_name || "")) outputInput.value = row.output_name || "";
   }
-  if (target.dataset.field === "transform") row.params = getTransformParams(target.value);
-  renderMappingRows();
+  if (field === "transform") {
+    row.params = getTransformParams(target.value);
+    renderMappingRows();
+  }
   updateExportRows();
 }
 function updateCallerAiMappingField(target) {
-  const row = state.callerAi.exportRows[Number(target.dataset.index)];
+  const index = Number(target.dataset.index);
+  const row = state.callerAi.exportRows[index];
   if (!row) return;
-  row[target.dataset.callerAiField] = target.dataset.callerAiField === "transform" ? normaliseTransformName(target.value) : target.value;
-  if (target.dataset.callerAiField === "transform") row.params = getTransformParams(target.value);
-  renderCallerAiMappingRows();
+  const field = target.dataset.callerAiField;
+  row[field] = field === "transform" ? normaliseTransformName(target.value) : target.value;
+  if (field === "transform") {
+    row.params = getTransformParams(target.value);
+    renderCallerAiMappingRows();
+  }
   updateCallerAiExportRows();
 }
 async function handleSimpleFile() {
