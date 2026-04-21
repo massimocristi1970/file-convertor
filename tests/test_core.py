@@ -1,7 +1,9 @@
+import io
 import unittest
 from types import SimpleNamespace
 
 import pandas as pd
+from openpyxl import load_workbook
 
 from data_io import (
     SUPPORTED_INPUT_TYPES,
@@ -153,6 +155,40 @@ class CoreTests(unittest.TestCase):
                 self.assertIsInstance(out, bytes)
                 self.assertGreater(len(out), 0)
                 self.assertTrue(get_mime_type(output_type))
+
+    def test_xlsx_export_keeps_datetime_columns_as_excel_dates(self) -> None:
+        df = pd.DataFrame([{"EventDate": pd.Timestamp("2026-04-21"), "Name": "Ada"}])
+        out = to_export_bytes(
+            df=df,
+            output_type="xlsx",
+            delimiter=",",
+            encoding="utf-8",
+            quoting=0,
+            escapechar_enabled=False,
+            date_format="%Y-%m-%d",
+        )
+        workbook = load_workbook(io.BytesIO(out))
+        cell = workbook["Sheet1"]["A2"]
+        self.assertIsNotNone(cell.value)
+        self.assertNotIsInstance(cell.value, str)
+        self.assertEqual(cell.number_format, "yyyy-mm-dd")
+
+    def test_xlsx_export_formats_parseable_date_columns_as_excel_dates(self) -> None:
+        df = pd.DataFrame([{"DateOfBirth": "21/04/2026", "Name": "Ada"}])
+        out = to_export_bytes(
+            df=df,
+            output_type="xlsx",
+            delimiter=",",
+            encoding="utf-8",
+            quoting=0,
+            escapechar_enabled=False,
+            date_format="%Y-%m-%d",
+        )
+        workbook = load_workbook(io.BytesIO(out))
+        cell = workbook["Sheet1"]["A2"]
+        self.assertIsNotNone(cell.value)
+        self.assertNotIsInstance(cell.value, str)
+        self.assertEqual(cell.number_format, "yyyy-mm-dd")
 
     def test_supported_input_types_are_covered_by_readers(self) -> None:
         fixtures = {

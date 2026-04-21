@@ -158,6 +158,50 @@ def normalise_dates(df: pd.DataFrame, date_format: str) -> pd.DataFrame:
     return out
 
 
+def _python_date_format_to_excel(date_format: str) -> str:
+    mapping = {
+        "%Y": "yyyy",
+        "%y": "yy",
+        "%m": "mm",
+        "%d": "dd",
+    }
+    excel_format = str(date_format or "%Y-%m-%d")
+    for token, replacement in mapping.items():
+        excel_format = excel_format.replace(token, replacement)
+    return excel_format
+
+
+def prepare_xlsx_dates(df: pd.DataFrame) -> tuple[pd.DataFrame, List[str]]:
+    out = df.copy()
+    date_columns: List[str] = []
+
+    for col in out.columns:
+        series = out[col]
+        column_name = str(col).strip().lower()
+
+        if pd.api.types.is_datetime64_any_dtype(series):
+            out[col] = pd.to_datetime(series, errors="coerce").dt.tz_localize(None)
+            date_columns.append(col)
+            continue
+
+        if not (pd.api.types.is_object_dtype(series) or pd.api.types.is_string_dtype(series)):
+            continue
+        if not any(token in column_name for token in ("date", "dob", "birth", "expiry", "issued", "created", "updated")):
+            continue
+
+        non_blank = series[~pd.isna(series)].map(lambda value: str(value).strip())
+        non_blank = non_blank[non_blank != ""]
+        if non_blank.empty:
+            continue
+
+        parsed = pd.to_datetime(non_blank, errors="coerce", dayfirst=True)
+        if parsed.notna().all():
+            out[col] = pd.to_datetime(series, errors="coerce", dayfirst=True)
+            date_columns.append(col)
+
+    return out, date_columns
+
+
 def sniff_delimiter(sample: str, fallback: str = ",") -> str:
     try:
         dialect = csv.Sniffer().sniff(sample, delimiters=[",", ";", "\t", "|"])
@@ -347,7 +391,21 @@ def to_csv_bytes(
 
 def to_xlsx_bytes(df: pd.DataFrame, date_format: str) -> bytes:
     buf = io.BytesIO()
-    normalise_dates(df, date_format=date_format).to_excel(buf, index=False, sheet_name="Sheet1", engine="openpyxl")
+    excel_df, date_columns = prepare_xlsx_dates(df)
+    excel_date_format = _python_date_format_to_excel(date_format)
+    with pd.ExcelWriter(
+        buf,
+        engine="openpyxl",
+        date_format=excel_date_format,
+        datetime_format=excel_date_format,
+    ) as writer:
+        excel_df.to_excel(writer, index=False, sheet_name="Sheet1")
+        worksheet = writer.book["Sheet1"]
+        for col_idx, column_name in enumerate(excel_df.columns, start=1):
+            if column_name not in date_columns:
+                continue
+            for row_idx in range(2, worksheet.max_row + 1):
+                worksheet.cell(row=row_idx, column=col_idx).number_format = excel_date_format
     buf.seek(0)
     return buf.getvalue()
 
