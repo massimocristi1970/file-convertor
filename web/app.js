@@ -22,6 +22,7 @@ const state = {
     unmatchedReports: [],
     previewRows: [],
     previewColumns: [],
+    hasRun: false,
     combineMethod: "merge",
     schemaMode: "strict",
     addSourceFile: true,
@@ -571,6 +572,69 @@ function renderMergeNotes() {
   const el = document.getElementById("merge-notes");
   el.innerHTML = state.merge.notes.length ? state.merge.notes.map((note) => `<div>${note}</div>`).join("") : "No notes yet.";
 }
+function currentMergeWorkflowMeta() {
+  if (state.merge.combineMethod === "append") {
+    return {
+      title: "Combine Files",
+      description: "Append files together without replacing the original merge-and-map workflow.",
+      actionTitle: "Combine",
+      runLabel: "Combine Files",
+      exportTitle: "Download",
+      emptyStatus: "Add one or more files to combine.",
+      readyHint: "Run Combine Files to build the preview.",
+      exportHint: "Combine your files to preview and download the result."
+    };
+  }
+  return {
+    title: "Merge + Map + Transform",
+    description: "Match files by keys, map the output columns you want, and download a transformed export.",
+    actionTitle: "Merge",
+    runLabel: "Run Merge",
+    exportTitle: "Export",
+    emptyStatus: "Add one or more files to begin.",
+    readyHint: "Run Merge to build the preview.",
+    exportHint: "Run a merge and configure output columns to preview the export."
+  };
+}
+function mergeReadyMessage() {
+  const meta = currentMergeWorkflowMeta();
+  return state.merge.files.length ? `${state.merge.files.length} file(s) ready. ${meta.readyHint}` : meta.emptyStatus;
+}
+function updateMergeWorkflowChrome() {
+  const meta = currentMergeWorkflowMeta();
+  const isAppendMode = state.merge.combineMethod === "append";
+  document.getElementById("merge-mode-title").textContent = meta.title;
+  document.getElementById("merge-mode-description").textContent = meta.description;
+  document.getElementById("merge-action-title").textContent = meta.actionTitle;
+  document.getElementById("run-merge").textContent = meta.runLabel;
+  document.getElementById("merge-export-title").textContent = meta.exportTitle;
+  document.getElementById("merge-template-actions").classList.toggle("hidden", isAppendMode);
+  document.getElementById("download-unmatched").classList.toggle("hidden", isAppendMode);
+}
+function resetMergeResults() {
+  const meta = currentMergeWorkflowMeta();
+  state.merge.hasRun = false;
+  state.merge.mergedRows = [];
+  state.merge.mergedColumns = [];
+  state.merge.diagnostics = [];
+  state.merge.notes = [];
+  state.merge.unmatchedReports = [];
+  state.merge.previewRows = [];
+  state.merge.previewColumns = [];
+  renderMergeDiagnostics();
+  renderMergeNotes();
+  renderTable("merge-table", [], 25, []);
+  setStatus("merge-status", mergeReadyMessage(), "info");
+  setStatus("export-status", meta.exportHint, "info");
+}
+function setMergeWorkflow(mode) {
+  const nextCombineMethod = mode === "combine" ? "append" : "merge";
+  const changed = state.merge.combineMethod !== nextCombineMethod;
+  state.merge.combineMethod = nextCombineMethod;
+  updateMergeWorkflowChrome();
+  if (changed) resetMergeResults();
+  updateMergeModeUI();
+}
 function renderMappingRows() {
   const list = document.getElementById("mapping-list"); list.innerHTML = "";
   const columns = state.merge.mergedColumns;
@@ -635,7 +699,15 @@ function renderCallerAiParamInputs(row, index) {
   return "";
 }
 function updateExportRows() {
+  const meta = currentMergeWorkflowMeta();
   if (state.merge.combineMethod === "append") {
+    if (!state.merge.hasRun) {
+      state.merge.previewRows = [];
+      state.merge.previewColumns = [];
+      renderTable("merge-table", [], 25, []);
+      setStatus("export-status", meta.exportHint, "info");
+      return;
+    }
     state.merge.previewRows = state.merge.mergedRows || [];
     state.merge.previewColumns = state.merge.mergedColumns || [];
     renderTable("merge-table", state.merge.previewRows, 25, state.merge.previewColumns);
@@ -644,6 +716,13 @@ function updateExportRows() {
     } else {
       setStatus("export-status", `Your combined file is ready: ${state.merge.previewRows.length} row(s), ${state.merge.previewColumns.length} column(s). Choose a format and download it.`, "info");
     }
+    return;
+  }
+  if (!state.merge.hasRun) {
+    state.merge.previewRows = [];
+    state.merge.previewColumns = [];
+    renderTable("merge-table", [], 25, []);
+    setStatus("export-status", meta.exportHint, "info");
     return;
   }
   state.merge.exportRows = state.merge.exportRows.filter((row) => row.output_name || row.source !== "(blank)");
@@ -755,6 +834,7 @@ function renderFileCards() {
 }
 function updateMergeModeUI() {
   const isAppendMode = state.merge.combineMethod === "append";
+  updateMergeWorkflowChrome();
   document.getElementById("merge-key-options").classList.toggle("hidden", isAppendMode);
   document.getElementById("append-options").classList.toggle("hidden", !isAppendMode);
   document.getElementById("merge-mapping-card").classList.toggle("hidden", isAppendMode);
@@ -811,7 +891,8 @@ function switchMode(mode) {
   state.mode = mode;
   document.getElementById("simple-mode").classList.toggle("hidden", mode !== "simple");
   document.getElementById("caller-ai-mode").classList.toggle("hidden", mode !== "caller-ai");
-  document.getElementById("merge-mode").classList.toggle("hidden", mode !== "merge");
+  document.getElementById("merge-mode").classList.toggle("hidden", !["merge-map", "combine"].includes(mode));
+  if (mode === "merge-map" || mode === "combine") setMergeWorkflow(mode);
   document.querySelectorAll(".mode-tab").forEach((button) => {
     const active = button.dataset.mode === mode;
     button.classList.toggle("active", active);
@@ -829,7 +910,7 @@ async function handleMergeFiles() {
     } catch (error) { setStatus("merge-status", `${file.name}: ${error.message}`, "danger"); }
   }
   renderFileCards();
-  setStatus("merge-status", `${state.merge.files.length} file(s) ready.`, "info");
+  resetMergeResults();
 }
 function runMerge() {
   try {
@@ -844,6 +925,7 @@ function runMerge() {
       state.merge.mergedColumns = combineColumns;
       state.merge.notes = notes;
       state.merge.unmatchedReports = [];
+      state.merge.hasRun = true;
       renderMergeDiagnostics(); renderMergeNotes();
       updateExportRows();
       updateMergeModeUI();
@@ -871,6 +953,7 @@ function runMerge() {
     state.merge.mergedColumns = uniqueColumns(state.merge.mergedRows);
     state.merge.notes = notes;
     state.merge.unmatchedReports = unmatchedReports;
+    state.merge.hasRun = true;
     renderMergeDiagnostics(); renderMergeNotes();
     if (!state.merge.exportRows.length) buildDefaultOutputRows(document.getElementById("output-columns-count").value);
     updateExportRows();
@@ -902,11 +985,6 @@ function bindEvents() {
     resetCallerAiOutputRows(state.callerAi.columns || []);
     renderCallerAiMappingRows();
     updateCallerAiExportRows();
-  });
-  document.getElementById("merge-combine-method").addEventListener("change", (event) => {
-    state.merge.combineMethod = event.target.value;
-    state.merge.unmatchedReports = [];
-    updateMergeModeUI();
   });
   document.getElementById("append-source-file").addEventListener("change", (event) => {
     state.merge.addSourceFile = event.target.checked;
@@ -947,7 +1025,7 @@ function bindEvents() {
         entry.keyCols = template.merge_keys_by_role?.[entry.role] || entry.keyCols;
         entry.duplicateStrategy = template.duplicate_strategy_by_role?.[entry.role] || entry.duplicateStrategy;
       });
-      renderFileCards(); renderMappingRows(); setStatus("merge-status", "Template loaded.", "info");
+      renderFileCards(); renderMappingRows(); resetMergeResults(); setStatus("merge-status", `Template loaded. ${currentMergeWorkflowMeta().readyHint}`, "info");
     } catch (error) { setStatus("merge-status", error.message, "danger"); }
   });
   document.addEventListener("input", (event) => {
@@ -996,7 +1074,7 @@ function bindEvents() {
   document.addEventListener("click", (event) => {
     const target = event.target;
     if (target.matches("[data-delete-file]")) {
-      state.merge.files.splice(Number(target.dataset.deleteFile), 1); renderFileCards(); setStatus("merge-status", `${state.merge.files.length} file(s) ready.`, "info");
+      state.merge.files.splice(Number(target.dataset.deleteFile), 1); renderFileCards(); resetMergeResults();
     }
     if (target.matches("[data-remove-index]")) {
       state.merge.exportRows.splice(Number(target.dataset.removeIndex), 1); renderMappingRows(); updateExportRows();

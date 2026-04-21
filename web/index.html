@@ -20,7 +20,8 @@
           <div class="inline-actions mode-switch">
             <button class="btn mode-tab active" data-mode="simple" type="button">Simple Convert</button>
             <button class="btn btn-secondary mode-tab" data-mode="caller-ai" type="button">Caller AI</button>
-            <button class="btn btn-secondary mode-tab" data-mode="merge" type="button">Combine Files</button>
+            <button class="btn btn-secondary mode-tab" data-mode="merge-map" type="button">Merge + Map + Transform</button>
+            <button class="btn btn-secondary mode-tab" data-mode="combine" type="button">Combine Files</button>
           </div>
         </div>
       </header>
@@ -164,14 +165,17 @@
       <section class="card stack hidden" id="merge-mode">
         <div class="section-header">
           <div>
-            <h2>Combine Files</h2>
+            <h2 id="merge-mode-title">Merge + Map + Transform</h2>
+            <p id="merge-mode-description">Match files by keys, map the output columns you want, and download a transformed export.</p>
           </div>
           <div class="inline-actions">
             <input id="merge-files" type="file" accept=".xlsx,.csv,.tsv,.txt,.json,.xml" multiple hidden>
             <label class="btn" for="merge-files">Add Files</label>
-            <input id="template-file" type="file" accept=".json" hidden>
-            <label class="btn btn-secondary" for="template-file">Load Template</label>
-            <button class="btn btn-ghost" id="download-template" type="button">Download Template</button>
+            <div class="inline-actions" id="merge-template-actions">
+              <input id="template-file" type="file" accept=".json" hidden>
+              <label class="btn btn-secondary" for="template-file">Load Template</label>
+              <button class="btn btn-ghost" id="download-template" type="button">Download Template</button>
+            </div>
           </div>
         </div>
         <div class="alert alert-info" id="merge-status">Add one or more files to begin.</div>
@@ -180,16 +184,7 @@
         <div class="card inner-card stack">
           <div class="section-header">
             <div>
-              <h3>Merge</h3>
-            </div>
-          </div>
-          <div class="form-grid form-grid--two">
-            <div class="form-group">
-              <label for="merge-combine-method">Combine method</label>
-              <select id="merge-combine-method">
-                <option value="merge">Match by keys</option>
-                <option value="append">Combine rows</option>
-              </select>
+              <h3 id="merge-action-title">Merge</h3>
             </div>
           </div>
           <div class="form-grid form-grid--three" id="merge-key-options">
@@ -225,7 +220,7 @@
             </div>
           </div>
           <div class="inline-actions">
-            <button class="btn" id="run-merge" type="button">Combine Files</button>
+            <button class="btn" id="run-merge" type="button">Run Merge</button>
             <button class="btn btn-secondary" id="download-unmatched" type="button">Download Unmatched ZIP</button>
           </div>
           <div class="stats-strip compact" id="merge-diagnostics"></div>
@@ -248,7 +243,7 @@
         <div class="card inner-card stack" id="merge-export-card">
           <div class="section-header">
             <div>
-              <h3>Download</h3>
+              <h3 id="merge-export-title">Export</h3>
             </div>
           </div>
           <div class="form-grid form-grid--two">
