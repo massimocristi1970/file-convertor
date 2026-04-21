@@ -187,12 +187,55 @@ function rowsToCsv(rows, delimiter, columnsOverride = []) {
 function uniqueColumns(rows) {
   return Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
 }
+function looksLikeDateColumn(columnName) {
+  const text = String(columnName || "").toLowerCase();
+  return ["date", "dob", "birth", "expiry", "issued", "created", "updated"].some((token) => text.includes(token));
+}
+function parseExportDateValue(value) {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+  if (/^\d+(?:\.0+)?$/.test(text)) {
+    const serial = Number(text);
+    if (serial >= 1 && serial <= 60000) return new Date(Date.UTC(1899, 11, 30) + serial * 86400000);
+  }
+  const slashMatch = text.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (slashMatch) {
+    const year = slashMatch[3].length === 2 ? Number(`20${slashMatch[3]}`) : Number(slashMatch[3]);
+    return new Date(Date.UTC(
+      year,
+      Number(slashMatch[2]) - 1,
+      Number(slashMatch[1]),
+      Number(slashMatch[4] || 0),
+      Number(slashMatch[5] || 0),
+      Number(slashMatch[6] || 0)
+    ));
+  }
+  const parsed = new Date(text);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+function prepareRowsForXlsx(rows, columns) {
+  const dateColumns = columns.filter((column) => looksLikeDateColumn(column));
+  const preparedRows = rows.map((row) => {
+    const out = {};
+    columns.forEach((column) => {
+      const value = row[column];
+      if (dateColumns.includes(column)) {
+        out[column] = parseExportDateValue(value) || value;
+      } else {
+        out[column] = value;
+      }
+    });
+    return out;
+  });
+  return { preparedRows, dateColumns };
+}
 async function parseFile(file, options = {}) {
   const fileType = detectFileType(file.name);
   const headerRow = Number(options.headerRow || 1);
   const delimiter = options.delimiter || "auto";
   if (fileType === "xlsx") {
-    const workbook = XLSX.read(await file.arrayBuffer(), { type: "array" });
+    const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
     const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
     return { fileType, rows: XLSX.utils.sheet_to_json(firstSheet, { defval: "" }), fileName: file.name };
   }
@@ -209,7 +252,18 @@ async function exportRows(rows, fileName, type, columnsOverride = []) {
   const name = `${safeFilename(fileName)}.${type}`;
   const textDelimiter = type === "tsv" ? "\t" : ",";
   if (type === "xlsx") {
-    const worksheet = XLSX.utils.json_to_sheet(rows, { header: columnsOverride.length ? columnsOverride : undefined });
+    const columns = columnsOverride.length ? columnsOverride : uniqueColumns(rows);
+    const { preparedRows, dateColumns } = prepareRowsForXlsx(rows, columns);
+    const worksheet = XLSX.utils.json_to_sheet(preparedRows, { header: columns, cellDates: true });
+    dateColumns.forEach((column) => {
+      const colIndex = columns.indexOf(column);
+      if (colIndex < 0) return;
+      for (let rowIndex = 0; rowIndex < preparedRows.length; rowIndex += 1) {
+        const cellRef = XLSX.utils.encode_cell({ r: rowIndex + 1, c: colIndex });
+        const cell = worksheet[cellRef];
+        if (cell && (cell.t === "d" || cell.v instanceof Date)) cell.z = "yyyy-mm-dd";
+      }
+    });
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "Sheet1");
     XLSX.writeFile(workbook, name);
