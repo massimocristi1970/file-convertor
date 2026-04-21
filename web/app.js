@@ -3,6 +3,7 @@ const OUTPUT_TYPES = ["csv", "tsv", "txt", "xlsx", "json", "xml"];
 const TRANSFORMS = ["None", "Text (force)", "UK Postcode (extract)", "Address first line (before comma)", "UK mobile -> 44", "Digits only", "Digits: keep last N", "Extract by regex", "Split + take part", "Prefix if missing", "Suffix", "Regex replace", "Date: format", "Name: extract first", "Name: extract title", "Name: extract surname"];
 const CALLER_AI_DEFAULT_COLUMNS = ["Name", "PhoneNumber", "CardNumber", "DateOfBirth", "PostalCode", "Title", "Surname"];
 const DUMMY_CARD_OUTPUT_NAMES = new Set(["CardNumber"]);
+const DATE_EXPORT_COLUMNS = new Set(["StageDate", "FundedDate", "LastPaymentDate"]);
 function dummyCardNumber() {
   return String(Math.floor(Math.random() * 10000)).padStart(4, "0");
 }
@@ -182,7 +183,7 @@ function rowsToCsv(rows, delimiter, columnsOverride = []) {
     const text = String(value ?? "");
     return /["\n,;|\t]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
   };
-  return [columns.join(delimiter), ...rows.map((row) => columns.map((column) => esc(row[column])).join(delimiter))].join("\n");
+  return [columns.join(delimiter), ...rows.map((row) => columns.map((column) => esc(formatValueForDownload(column, row[column], "text"))).join(delimiter))].join("\n");
 }
 function uniqueColumns(rows) {
   return Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
@@ -199,10 +200,7 @@ function isWorksheetDateCell(cell) {
   if (cell.t === "d" && cell.v instanceof Date) return true;
   return cell.t === "n" && Boolean(cell.z) && typeof XLSX?.SSF?.is_date === "function" && XLSX.SSF.is_date(cell.z);
 }
-function looksLikeDateColumn(columnName) {
-  const text = String(columnName || "").toLowerCase();
-  return ["date", "dob", "birth", "expiry", "issued", "created", "updated"].some((token) => text.includes(token));
-}
+function isTargetDateColumn(columnName) { return DATE_EXPORT_COLUMNS.has(String(columnName || "").trim()); }
 function parseExportDateValue(value) {
   if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
   const text = String(value ?? "").trim();
@@ -226,12 +224,25 @@ function parseExportDateValue(value) {
   const parsed = new Date(text);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
+function formatDateForDownload(value) {
+  const parsed = parseExportDateValue(value);
+  if (!parsed) return value ?? "";
+  const day = String(parsed.getUTCDate()).padStart(2, "0");
+  const month = String(parsed.getUTCMonth() + 1).padStart(2, "0");
+  const year = String(parsed.getUTCFullYear());
+  return `${day}/${month}/${year}`;
+}
+function formatValueForDownload(column, value, mode = "text") {
+  if (!isTargetDateColumn(column)) return value;
+  if (mode === "xlsx") return parseExportDateValue(value) || value;
+  return formatDateForDownload(value);
+}
 function prepareRowsForXlsx(rows, columns) {
   const dateColumns = columns.filter((column) => {
+    if (!isTargetDateColumn(column)) return false;
     const values = rows.map((row) => row[column]).filter((value) => value !== "" && value !== null && value !== undefined);
     if (!values.length) return false;
     if (values.every((value) => value instanceof Date && !Number.isNaN(value.getTime()))) return true;
-    if (!looksLikeDateColumn(column)) return false;
     return values.every((value) => parseExportDateValue(value));
   });
   const preparedRows = rows.map((row) => {
@@ -239,7 +250,7 @@ function prepareRowsForXlsx(rows, columns) {
     columns.forEach((column) => {
       const value = row[column];
       if (dateColumns.includes(column)) {
-        out[column] = parseExportDateValue(value) || value;
+        out[column] = formatValueForDownload(column, value, "xlsx");
       } else {
         out[column] = value;
       }
@@ -264,7 +275,8 @@ function parseWorkbookSheet(workbook, sheetName) {
   for (let col = range.s.c; col <= range.e.c; col += 1) {
     for (let row = headerRowIndex + 1; row <= range.e.r; row += 1) {
       const cell = worksheet[XLSX.utils.encode_cell({ r: row, c: col })];
-      if (isWorksheetDateCell(cell)) {
+      const header = headers[col - range.s.c];
+      if (isTargetDateColumn(header) && isWorksheetDateCell(cell)) {
         dateColumns.add(headers[col - range.s.c]);
         break;
       }
@@ -315,8 +327,8 @@ async function parseFile(file, options = {}) {
 async function exportRows(rows, fileName, type, columnsOverride = []) {
   const name = `${safeFilename(fileName)}.${type}`;
   const textDelimiter = type === "tsv" ? "\t" : ",";
+  const columns = columnsOverride.length ? columnsOverride : uniqueColumns(rows);
   if (type === "xlsx") {
-    const columns = columnsOverride.length ? columnsOverride : uniqueColumns(rows);
     const { preparedRows, dateColumns } = prepareRowsForXlsx(rows, columns);
     const worksheet = XLSX.utils.json_to_sheet(preparedRows, { header: columns, cellDates: true });
     dateColumns.forEach((column) => {
@@ -333,7 +345,8 @@ async function exportRows(rows, fileName, type, columnsOverride = []) {
     XLSX.writeFile(workbook, name);
     return;
   }
-  const content = type === "json" ? JSON.stringify(rows, null, 2) : type === "xml" ? toXml(rows) : rowsToCsv(rows, textDelimiter, columnsOverride);
+  const serializableRows = rows.map((row) => Object.fromEntries(columns.map((column) => [column, formatValueForDownload(column, row[column], "text")])));
+  const content = type === "json" ? JSON.stringify(serializableRows, null, 2) : type === "xml" ? toXml(serializableRows) : rowsToCsv(serializableRows, textDelimiter, columns);
   downloadBlob(name, content, type === "json" ? "application/json" : type === "xml" ? "application/xml" : "text/plain;charset=utf-8");
 }
 function downloadBlob(name, content, mime) {
@@ -350,7 +363,7 @@ function renderTable(tableId, rows, limit = 25, columnsOverride = []) {
   const columns = columnsOverride.length ? columnsOverride : uniqueColumns(rows);
   if (!columns.length) return;
   const headerRow = document.createElement("tr"); columns.forEach((column) => { const th = document.createElement("th"); th.textContent = column; headerRow.appendChild(th); }); thead.appendChild(headerRow);
-  rows.slice(0, limit).forEach((row) => { const tr = document.createElement("tr"); columns.forEach((column) => { const td = document.createElement("td"); td.textContent = row[column] ?? ""; tr.appendChild(td); }); tbody.appendChild(tr); });
+  rows.slice(0, limit).forEach((row) => { const tr = document.createElement("tr"); columns.forEach((column) => { const td = document.createElement("td"); td.textContent = formatValueForDownload(column, row[column], "text") ?? ""; tr.appendChild(td); }); tbody.appendChild(tr); });
 }
 function normaliseKey(value) { return String(value ?? "").trim().replace(/\.0$/, ""); }
 function buildCompositeKey(row, keyCols) { return keyCols.map((col) => normaliseKey(row[col])).join("||"); }
