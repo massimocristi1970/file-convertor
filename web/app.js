@@ -694,13 +694,14 @@ function updateExportRows() {
   const activeRows = state.merge.exportRows
     .map((row) => ({ ...row, output_name: String(row.output_name || "").trim() }))
     .filter((row) => row.output_name || row.source !== "(blank)");
-  const outputNames = activeRows.map((row) => row.output_name).filter(Boolean);
+  const effectiveOutputName = (row) => row.output_name || (row.source !== "(blank)" ? row.source : "");
+  const outputNames = activeRows.map((row) => effectiveOutputName(row)).filter(Boolean);
   const duplicateNames = outputNames.filter((name, index) => outputNames.indexOf(name) !== index);
   const mergedRows = state.merge.mergedRows || [];
   const previewColumns = [];
   const missingSources = [];
   activeRows.forEach((row) => {
-    const outputName = String(row.output_name || "").trim();
+    const outputName = effectiveOutputName(row);
     if (!outputName) return;
     previewColumns.push(outputName);
     if (row.source !== "(blank)" && !state.merge.mergedColumns.includes(row.source)) missingSources.push(`${outputName} <- ${row.source}`);
@@ -708,7 +709,7 @@ function updateExportRows() {
   const exportData = mergedRows.map((mergedRow) => {
     const out = {};
     activeRows.forEach((row) => {
-      const outputName = String(row.output_name || "").trim();
+      const outputName = effectiveOutputName(row);
       if (!outputName) return;
       if (row.source === "(blank)") {
         out[outputName] = DUMMY_CARD_OUTPUT_NAMES.has(outputName) ? dummyCardNumber() : "";
@@ -1041,7 +1042,13 @@ function bindEvents() {
     if (target.matches("[data-field]")) {
       const row = state.merge.exportRows[Number(target.dataset.index)];
       if (!row) return;
+      const previousSource = row.source;
       row[target.dataset.field] = target.dataset.field === "transform" ? normaliseTransformName(target.value) : target.value;
+      if (target.dataset.field === "source") {
+        const trimmedOutputName = String(row.output_name || "").trim();
+        if ((!trimmedOutputName || trimmedOutputName === previousSource) && target.value !== "(blank)") row.output_name = target.value;
+        if (trimmedOutputName === previousSource && target.value === "(blank)") row.output_name = "";
+      }
       if (target.dataset.field === "transform") row.params = getTransformParams(target.value);
       renderMappingRows(); updateExportRows();
     }
