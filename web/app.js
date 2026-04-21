@@ -691,13 +691,15 @@ function renderCallerAiParamInputs(row, index) {
   return "";
 }
 function updateExportRows() {
-  state.merge.exportRows = state.merge.exportRows.filter((row) => row.output_name || row.source !== "(blank)");
-  const outputNames = state.merge.exportRows.map((row) => String(row.output_name || "").trim()).filter(Boolean);
+  const activeRows = state.merge.exportRows
+    .map((row) => ({ ...row, output_name: String(row.output_name || "").trim() }))
+    .filter((row) => row.output_name || row.source !== "(blank)");
+  const outputNames = activeRows.map((row) => row.output_name).filter(Boolean);
   const duplicateNames = outputNames.filter((name, index) => outputNames.indexOf(name) !== index);
   const mergedRows = state.merge.mergedRows || [];
   const previewColumns = [];
   const missingSources = [];
-  state.merge.exportRows.forEach((row) => {
+  activeRows.forEach((row) => {
     const outputName = String(row.output_name || "").trim();
     if (!outputName) return;
     previewColumns.push(outputName);
@@ -705,7 +707,7 @@ function updateExportRows() {
   });
   const exportData = mergedRows.map((mergedRow) => {
     const out = {};
-    state.merge.exportRows.forEach((row) => {
+    activeRows.forEach((row) => {
       const outputName = String(row.output_name || "").trim();
       if (!outputName) return;
       if (row.source === "(blank)") {
@@ -748,9 +750,9 @@ function updateCombineExportRows() {
   }
 }
 function updateCallerAiExportRows() {
-  state.callerAi.exportRows = state.callerAi.exportRows.filter((row) => row.output_name || row.source !== "(blank)");
   const activeRows = state.callerAi.exportRows
     .map((row) => ({ ...row, output_name: String(row.output_name || "").trim() }))
+    .filter((row) => row.output_name || row.source !== "(blank)")
     .filter((row) => row.output_name);
   const previewColumns = activeRows.map((row) => row.output_name);
   const duplicateNames = previewColumns.filter((name, index) => previewColumns.indexOf(name) !== index);
@@ -1030,30 +1032,35 @@ function bindEvents() {
     const target = event.target;
     if (target.matches("[data-file-field]")) {
       const entry = state.merge.files[Number(target.dataset.index)];
+      if (!entry) return;
       if (target.dataset.fileField === "role") entry.role = target.value.trim() || `File${Number(target.dataset.index) + 1}`;
       if (target.dataset.fileField === "keyCols") entry.keyCols = parseColumns(target.value);
       renderFileCards(); resetMergeResults();
     }
     if (target.matches("[data-field]")) {
       const row = state.merge.exportRows[Number(target.dataset.index)];
+      if (!row) return;
       row[target.dataset.field] = target.dataset.field === "transform" ? normaliseTransformName(target.value) : target.value;
       if (target.dataset.field === "transform") row.params = getTransformParams(target.value);
       renderMappingRows(); updateExportRows();
     }
     if (target.matches("[data-caller-ai-field]")) {
       const row = state.callerAi.exportRows[Number(target.dataset.index)];
+      if (!row) return;
       row[target.dataset.callerAiField] = target.dataset.callerAiField === "transform" ? normaliseTransformName(target.value) : target.value;
       if (target.dataset.callerAiField === "transform") row.params = getTransformParams(target.value);
       renderCallerAiMappingRows(); updateCallerAiExportRows();
     }
     if (target.matches("[data-param]")) {
       const row = state.merge.exportRows[Number(target.dataset.index)];
+      if (!row) return;
       row.params ||= {};
       row.params[target.dataset.param] = target.type === "checkbox" ? target.checked : target.value;
       updateExportRows();
     }
     if (target.matches("[data-caller-ai-param]")) {
       const row = state.callerAi.exportRows[Number(target.dataset.index)];
+      if (!row) return;
       row.params ||= {};
       row.params[target.dataset.callerAiParam] = target.type === "checkbox" ? target.checked : target.value;
       updateCallerAiExportRows();
@@ -1061,12 +1068,25 @@ function bindEvents() {
   });
   document.addEventListener("change", (event) => {
     const target = event.target;
-    if (target.matches("select[data-file-field='duplicateStrategy']")) { state.merge.files[Number(target.dataset.index)].duplicateStrategy = target.value; resetMergeResults(); }
+    if (target.matches("select[data-file-field='duplicateStrategy']")) {
+      const entry = state.merge.files[Number(target.dataset.index)];
+      if (!entry) return;
+      entry.duplicateStrategy = target.value;
+      resetMergeResults();
+    }
     if (target.matches("[data-param]") && target.type === "checkbox") {
-      const row = state.merge.exportRows[Number(target.dataset.index)]; row.params ||= {}; row.params[target.dataset.param] = target.checked; updateExportRows();
+      const row = state.merge.exportRows[Number(target.dataset.index)];
+      if (!row) return;
+      row.params ||= {};
+      row.params[target.dataset.param] = target.checked;
+      updateExportRows();
     }
     if (target.matches("[data-caller-ai-param]") && target.type === "checkbox") {
-      const row = state.callerAi.exportRows[Number(target.dataset.index)]; row.params ||= {}; row.params[target.dataset.callerAiParam] = target.checked; updateCallerAiExportRows();
+      const row = state.callerAi.exportRows[Number(target.dataset.index)];
+      if (!row) return;
+      row.params ||= {};
+      row.params[target.dataset.callerAiParam] = target.checked;
+      updateCallerAiExportRows();
     }
   });
   document.addEventListener("click", (event) => {
