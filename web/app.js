@@ -209,14 +209,15 @@ function isWorksheetDateCell(cell) {
   if (cell.t === "d" && cell.v instanceof Date) return true;
   return cell.t === "n" && Boolean(cell.z) && typeof XLSX?.SSF?.is_date === "function" && XLSX.SSF.is_date(cell.z);
 }
-function isTargetDateColumn(columnName) { return DATE_EXPORT_COLUMNS.has(String(columnName || "").trim()); }
+const DATE_EXPORT_COLUMN_KEYS = new Set(Array.from(DATE_EXPORT_COLUMNS).map((name) => normaliseLabel(name)));
+function isTargetDateColumn(columnName) { return DATE_EXPORT_COLUMN_KEYS.has(normaliseLabel(columnName)); }
 function parseExportDateValue(value) {
   if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
   const text = String(value ?? "").trim();
   if (!text) return null;
-  if (/^\d+(?:\.0+)?$/.test(text)) {
+  if (/^-?\d+(?:\.\d+)?$/.test(text)) {
     const serial = Number(text);
-    if (serial >= 1 && serial <= 60000) return new Date(Date.UTC(1899, 11, 30) + serial * 86400000);
+    if (serial >= 1 && serial <= 60000) return new Date(Date.UTC(1899, 11, 30) + Math.round(serial * 86400000));
   }
   const slashMatch = text.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
   if (slashMatch) {
@@ -242,7 +243,9 @@ function formatDateForDownload(value) {
   return `${day}/${month}/${year}`;
 }
 function formatValueForDownload(column, value, mode = "text") {
-  if (!isTargetDateColumn(column)) return value;
+  const isDateCol = isTargetDateColumn(column);
+  const valueIsDate = value instanceof Date && !Number.isNaN(value.getTime());
+  if (!isDateCol && !valueIsDate) return value;
   if (mode === "xlsx") return parseExportDateValue(value) || value;
   return formatDateForDownload(value);
 }
@@ -287,8 +290,10 @@ function parseWorkbookSheet(workbook, sheetName) {
       const cell = worksheet[XLSX.utils.encode_cell({ r: row, c: col })];
       let value = "";
       if (cell) {
-        if (dateColumns.has(header)) {
+        const treatAsDate = dateColumns.has(header) || isTargetDateColumn(header) || isWorksheetDateCell(cell);
+        if (treatAsDate) {
           value = parseExportDateValue(cell.v) || parseExportDateValue(cell.w) || "";
+          if (value) dateColumns.add(header);
         } else if (cell.v !== undefined && cell.v !== null) {
           value = cell.v;
         }
