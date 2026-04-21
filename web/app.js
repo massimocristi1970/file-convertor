@@ -279,7 +279,7 @@ function parseWorkbookSheet(workbook, sheetName) {
       let value = "";
       if (cell) {
         if (dateColumns.has(header)) {
-          value = parseExportDateValue(cell.v) || "";
+          value = parseExportDateValue(cell.v) || parseExportDateValue(cell.w) || "";
         } else if (cell.v !== undefined && cell.v !== null) {
           value = cell.v;
         }
