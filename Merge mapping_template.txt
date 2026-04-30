@@ -1,0 +1,65 @@
+{
+  "version": 2,
+  "join_type": "left",
+  "base_role": "File1",
+  "merge_keys_by_role": {
+    "File1": [
+      "AppID"
+    ],
+    "File2": [
+      "AppID"
+    ]
+  },
+  "duplicate_strategy_by_role": {
+    "File1": "Keep first",
+    "File2": "Keep first"
+  },
+  "output_spec": [
+    {
+      "source": "Full Name",
+      "transform": "Name: extract first",
+      "params": {},
+      "output_name": "Name"
+    },
+    {
+      "source": "Mobile",
+      "transform": "UK mobile -> 44",
+      "params": {},
+      "output_name": "PhoneNumber"
+    },
+    {
+      "source": "CardNumber",
+      "transform": "Digits: keep last N",
+      "params": {
+        "n": 4
+      },
+      "output_name": "CardNumber"
+    },
+    {
+      "source": "DOB",
+      "transform": "Date: format",
+      "params": {
+        "format": "%Y-%m-%d"
+      },
+      "output_name": "DateOfBirth"
+    },
+    {
+      "source": "Postal Address",
+      "transform": "UK Postcode (extract)",
+      "params": {},
+      "output_name": "PostalCode"
+    },
+    {
+      "source": "Title",
+      "transform": "None",
+      "params": {},
+      "output_name": "Title"
+    },
+    {
+      "source": "Full Name",
+      "transform": "Name: extract surname",
+      "params": {},
+      "output_name": "Surname"
+    }
+  ]
+}
