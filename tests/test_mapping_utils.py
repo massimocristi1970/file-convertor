@@ -68,6 +68,10 @@ class MappingUtilsTests(unittest.TestCase):
         series = pd.Series(["33115"])
         self.assertEqual(apply_transform(series, "Date: format", {"format": "%Y-%m-%d"}).iloc[0], "1990-08-30")
 
+    def test_uk_postcode_numbers_transform_extracts_only_digits(self) -> None:
+        series = pd.Series(["10 Downing Street, London SW1A 2AA"])
+        self.assertEqual(apply_transform(series, "UK Postcode numbers (extract)", {}).iloc[0], "12")
+
     def test_name_transforms_extract_first_title_and_surname(self) -> None:
         series = pd.Series(["Dr Ada Lovelace"])
         self.assertEqual(apply_transform(series, "Name: extract first", {}).iloc[0], "Ada")

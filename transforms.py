@@ -26,6 +26,11 @@ def tf_uk_postcode(x: str, p: Dict[str, Any]) -> str:
     return match.group(1).strip() if match else ""
 
 
+def tf_uk_postcode_numbers(x: str, p: Dict[str, Any]) -> str:
+    postcode = tf_uk_postcode(x, p)
+    return "".join(re.findall(r"\d", postcode))
+
+
 def tf_first_line(x: str, p: Dict[str, Any]) -> str:
     s = x.strip()
     if not s:
@@ -157,6 +162,7 @@ TRANSFORM_FUNCS = {
     "None": tf_none,
     "Text (force)": tf_text_force,
     "UK Postcode (extract)": tf_uk_postcode,
+    "UK Postcode numbers (extract)": tf_uk_postcode_numbers,
     "Address first line (before comma)": tf_first_line,
     "UK mobile → 44": tf_uk_mobile_add44,
     "UK mobile -> 44": tf_uk_mobile_add44,
