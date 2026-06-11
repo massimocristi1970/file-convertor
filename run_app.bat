@@ -17,7 +17,8 @@ REM Install requirements (first run only really matters)
 pip install -r requirements.txt
 
 REM Run Streamlit
-streamlit run app.py
+streamlit run app.py --server.port 8613 --server.address localhost
 
 ENDLOCAL
 pause
+
