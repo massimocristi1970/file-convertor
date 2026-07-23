@@ -12,7 +12,7 @@ param(
 
     [ValidateNotNullOrEmpty()]
     [string[]]$SubFolderNames = @(
-        'Applications',
+        'Application',
         'EssentialsJsonAccept',
         'EssentialsJsonReject',
         'OpenBanking'
@@ -138,7 +138,8 @@ $dateEntryPrefixes = @($dateFolders | ForEach-Object { $_.Name + '/' })
 
 foreach ($subFolderName in $SubFolderNames) {
     $entriesToWrite = $workByZip[$subFolderName]
-    $zipPath = Join-Path -Path $outputFullPath -ChildPath ($subFolderName + '.zip')
+    $zipBaseName = if ($subFolderName -ieq 'Application') { 'Applications' } else { $subFolderName }
+    $zipPath = Join-Path -Path $outputFullPath -ChildPath ($zipBaseName + '.zip')
     $zipExists = Test-Path -LiteralPath $zipPath -PathType Leaf
 
     if ($PSCmdlet.ShouldProcess($zipPath, "Update flat JSON zip for $subFolderName")) {

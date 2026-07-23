@@ -28,8 +28,8 @@ The default zip files are:
 Example source:
 
 ```text
-US_Application_Data\2026-07-11\Applications\file.json
-US_Application_Data\2026-07-12\Applications\another-file.json
+US_Application_Data\2026-07-11\Application\file.json
+US_Application_Data\2026-07-12\Application\another-file.json
 ```
 
 Example zip contents:
@@ -57,6 +57,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\Update-JsonZips.ps1 -SourceRo
 ## Notes
 
 - The four default zip files are created if they do not already exist.
+- The source folder Application (singular) is written to Applications.zip.
 - New JSON files are added.
 - Changed JSON files are replaced in the zip when their timestamp or file size differs.
 - Unchanged JSON files are skipped.
