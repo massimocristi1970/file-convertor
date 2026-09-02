@@ -23,6 +23,8 @@ The default zip files are:
 <SourceRoot>\_json_zips\EssentialsJsonAccept.zip
 <SourceRoot>\_json_zips\EssentialsJsonReject.zip
 <SourceRoot>\_json_zips\OpenBanking.zip
+<SourceRoot>\_json_zips\OneScoreAccept.zip
+<SourceRoot>\_json_zips\OneScoreReject.zip
 ```
 
 Example source:
@@ -56,7 +58,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\Update-JsonZips.ps1 -SourceRo
 
 ## Notes
 
-- The four default zip files are created if they do not already exist.
+- The six default zip files are created if they do not already exist.
 - The source folder Application (singular) is written to Applications.zip.
 - New JSON files are added.
 - Changed JSON files are replaced in the zip when their timestamp or file size differs.

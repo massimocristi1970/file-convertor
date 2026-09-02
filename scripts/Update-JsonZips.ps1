@@ -15,7 +15,9 @@ param(
         'Application',
         'EssentialsJsonAccept',
         'EssentialsJsonReject',
-        'OpenBanking'
+        'OpenBanking',
+        'OneScoreAccept',
+        'OneScoreReject'
     ),
 
     [switch]$Recurse,
