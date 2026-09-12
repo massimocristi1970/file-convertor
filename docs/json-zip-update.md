@@ -25,6 +25,8 @@ The default zip files are:
 <SourceRoot>\_json_zips\OpenBanking.zip
 <SourceRoot>\_json_zips\OneScoreAccept.zip
 <SourceRoot>\_json_zips\OneScoreReject.zip
+<SourceRoot>\_json_zips\onescore_missing.zip
+<SourceRoot>\_json_zips\openbanking_missing.zip
 ```
 
 Example source:
@@ -58,11 +60,13 @@ powershell -ExecutionPolicy Bypass -File .\scripts\Update-JsonZips.ps1 -SourceRo
 
 ## Notes
 
-- The six default zip files are created if they do not already exist.
+- The eight default zip files are created if they do not already exist.
 - The source folder Application (singular) is written to Applications.zip.
-- New JSON files are added.
-- Changed JSON files are replaced in the zip when their timestamp or file size differs.
-- Unchanged JSON files are skipped.
+- Dated imports may place category folders directly beneath the date folder or beneath an extra same-named date folder; both layouts are scanned.
+- The root-level onescore_missing and openbanking_missing folders are zipped separately, including their XML files.
+- New source files are added.
+- Changed source files are replaced in the zip when their timestamp or file size differs.
+- Unchanged source files are skipped.
 - Old date-folder entries created by the earlier version of this script are removed from the target zips.
 - `-Recurse` includes JSON files in nested folders below each named subfolder. Omit it if each named subfolder only has JSON files directly inside it.
 - Use `-DateFolderPattern` if you want to limit which dated folders are scanned, for example `-DateFolderPattern "2026-*"`.

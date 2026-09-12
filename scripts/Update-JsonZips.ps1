@@ -20,6 +20,12 @@ param(
         'OneScoreReject'
     ),
 
+    [ValidateNotNullOrEmpty()]
+    [string[]]$RootFolderNames = @(
+        'onescore_missing',
+        'openbanking_missing'
+    ),
+
     [switch]$Recurse,
 
     [switch]$Force
@@ -78,12 +84,13 @@ $outputFullPath = Get-UnresolvedFullPath -Path $OutputRoot
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
-$dateFolders = Get-ChildItem -LiteralPath $sourceFullPath -Directory |
+$dateFolders = @(Get-ChildItem -LiteralPath $sourceFullPath -Directory |
     Where-Object {
         $_.Name -like $DateFolderPattern -and
-        $_.FullName -ine $outputFullPath
+        $_.FullName -ine $outputFullPath -and
+        $RootFolderNames -inotcontains $_.Name
     } |
-    Sort-Object Name
+    Sort-Object Name)
 
 $fileSearchOption = if ($Recurse) {
     [System.IO.SearchOption]::AllDirectories
@@ -94,38 +101,71 @@ $fileSearchOption = if ($Recurse) {
 $workByZip = @{}
 $matchingSubFoldersScanned = 0
 
-foreach ($subFolderName in $SubFolderNames) {
+foreach ($subFolderName in @($SubFolderNames) + @($RootFolderNames)) {
     $workByZip[$subFolderName] = @{}
 }
 
 foreach ($dateFolder in $dateFolders) {
+    # Some imports contain an extra same-named date directory, for example
+    # 2026-09-10\2026-09-10\Application. Support both layouts.
+    $dateSearchRoots = @($dateFolder.FullName)
+    $nestedDatePath = Join-Path -Path $dateFolder.FullName -ChildPath $dateFolder.Name
+    if (Test-Path -LiteralPath $nestedDatePath -PathType Container) {
+        $dateSearchRoots += $nestedDatePath
+    }
+
     foreach ($subFolderName in $SubFolderNames) {
-        $subFolderPath = Join-Path -Path $dateFolder.FullName -ChildPath $subFolderName
-        if (-not (Test-Path -LiteralPath $subFolderPath -PathType Container)) {
-            continue
-        }
+        foreach ($dateSearchRoot in $dateSearchRoots) {
+            $subFolderPath = Join-Path -Path $dateSearchRoot -ChildPath $subFolderName
+            if (-not (Test-Path -LiteralPath $subFolderPath -PathType Container)) {
+                continue
+            }
 
-        $matchingSubFoldersScanned++
-        $jsonFiles = @([System.IO.Directory]::EnumerateFiles(
-            $subFolderPath,
-            '*.json',
-            $fileSearchOption
-        ) | Sort-Object)
+            $matchingSubFoldersScanned++
+            $jsonFiles = @([System.IO.Directory]::EnumerateFiles(
+                $subFolderPath,
+                '*.json',
+                $fileSearchOption
+            ) | Sort-Object)
 
-        foreach ($jsonFilePath in $jsonFiles) {
-            $jsonFile = Get-Item -LiteralPath $jsonFilePath
-            $relativeJsonPath = Get-RelativePath -BasePath $subFolderPath -TargetPath $jsonFile.FullName
-            $entryName = ConvertTo-ZipEntryName -RelativePath $relativeJsonPath
+            foreach ($jsonFilePath in $jsonFiles) {
+                $jsonFile = Get-Item -LiteralPath $jsonFilePath
+                $relativeJsonPath = Get-RelativePath -BasePath $subFolderPath -TargetPath $jsonFile.FullName
+                $entryName = ConvertTo-ZipEntryName -RelativePath $relativeJsonPath
 
-            # If the same JSON path exists in multiple dated folders, the latest dated folder wins.
-            $workByZip[$subFolderName][$entryName] = [pscustomobject]@{
-                File = $jsonFile
-                DateFolderName = $dateFolder.Name
+                # If the same JSON path exists in multiple dated folders, the latest dated folder wins.
+                $workByZip[$subFolderName][$entryName] = [pscustomobject]@{
+                    File = $jsonFile
+                    DateFolderName = $dateFolder.Name
+                }
             }
         }
     }
 }
 
+foreach ($rootFolderName in $RootFolderNames) {
+    $rootFolderPath = Join-Path -Path $sourceFullPath -ChildPath $rootFolderName
+    if (-not (Test-Path -LiteralPath $rootFolderPath -PathType Container)) {
+        continue
+    }
+
+    $matchingSubFoldersScanned++
+    $sourceFiles = @([System.IO.Directory]::EnumerateFiles(
+        $rootFolderPath,
+        '*',
+        $fileSearchOption
+    ) | Sort-Object)
+
+    foreach ($sourceFilePath in $sourceFiles) {
+        $sourceFile = Get-Item -LiteralPath $sourceFilePath
+        $relativePath = Get-RelativePath -BasePath $rootFolderPath -TargetPath $sourceFile.FullName
+        $entryName = ConvertTo-ZipEntryName -RelativePath $relativePath
+        $workByZip[$rootFolderName][$entryName] = [pscustomobject]@{
+            File = $sourceFile
+            DateFolderName = $null
+        }
+    }
+}
 $summary = [ordered]@{
     DateFoldersScanned = $dateFolders.Count
     MatchingSubFoldersScanned = $matchingSubFoldersScanned
@@ -138,7 +178,7 @@ $summary = [ordered]@{
 $zipsTouched = @{}
 $dateEntryPrefixes = @($dateFolders | ForEach-Object { $_.Name + '/' })
 
-foreach ($subFolderName in $SubFolderNames) {
+foreach ($subFolderName in @($SubFolderNames) + @($RootFolderNames)) {
     $entriesToWrite = $workByZip[$subFolderName]
     $zipBaseName = if ($subFolderName -ieq 'Application') { 'Applications' } else { $subFolderName }
     $zipPath = Join-Path -Path $outputFullPath -ChildPath ($zipBaseName + '.zip')
