@@ -60,6 +60,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\Update-JsonZips.ps1 -SourceRo
 
 ## Notes
 
+- Cloud reads are retried up to three times, with five seconds between attempts. Use `-ReadAttempts` and `-RetryDelaySeconds` to adjust this.
+- Each zip is built in local temporary storage and published only when complete. A failed source read leaves that zip unchanged; zips completed earlier in the run remain updated. Temporary storage needs room for one archive and one source file, and the output drive needs room for a second copy of the archive during publication.
+
 - The eight default zip files are created if they do not already exist.
 - The source folder Application (singular) is written to Applications.zip.
 - Dated imports may place category folders directly beneath the date folder or beneath an extra same-named date folder; both layouts are scanned.
@@ -71,4 +74,18 @@ powershell -ExecutionPolicy Bypass -File .\scripts\Update-JsonZips.ps1 -SourceRo
 - `-Recurse` includes JSON files in nested folders below each named subfolder. Omit it if each named subfolder only has JSON files directly inside it.
 - Use `-DateFolderPattern` if you want to limit which dated folders are scanned, for example `-DateFolderPattern "2026-*"`.
 - Use `-SubFolderNames` to override the default list of zip targets.
+
+## OneDrive timeout
+
+If you see "The cloud operation was not completed before the time-out period expired", OneDrive could not supply a file in time. The script reports the failing path and retries before stopping.
+
+In File Explorer, right-click the source folder and select **Always keep on this device**. Ensure OneDrive is running and connected, wait for downloading to finish, then rerun `run_json_zip_update.bat`. Microsoft documents this option in [Files On-Demand for Windows](https://support.microsoft.com/en-US/onedrive/save-disk-space-with-onedrive-files-on-demand-for-windows).
+
+If an earlier version of the script failed, rerun once with `-Force` to replace any incomplete entries left by that run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Update-JsonZips.ps1 -SourceRoot "C:\Users\Massimo Cristi\OneDrive - Savvy Loan Products Ltd\US Product\US_Application_Data" -Recurse -Force
+```
+
+Run the local regression checks with `powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-JsonZipUpdate.ps1`. These use temporary fixtures, including a locked source file to verify retries and preservation of the existing archive on failure.
 

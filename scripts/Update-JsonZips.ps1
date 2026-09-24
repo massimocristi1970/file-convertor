@@ -1,4 +1,4 @@
-﻿[CmdletBinding(SupportsShouldProcess = $true)]
+[CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
@@ -27,6 +27,12 @@ param(
     ),
 
     [switch]$Recurse,
+
+    [ValidateRange(1, 10)]
+    [int]$ReadAttempts = 3,
+
+    [ValidateRange(0, 60)]
+    [int]$RetryDelaySeconds = 5,
 
     [switch]$Force
 )
@@ -68,6 +74,24 @@ function ConvertTo-ZipEntryName {
     )
 
     return $RelativePath.Replace('\', '/')
+}
+
+function Copy-FileWithRetry {
+    param([string]$Source, [string]$Destination)
+
+    for ($attempt = 1; $attempt -le $ReadAttempts; $attempt++) {
+        try {
+            [System.IO.File]::Copy($Source, $Destination, $true)
+            return
+        } catch {
+            $cause = $_.Exception.GetBaseException()
+            if ($cause -isnot [System.IO.IOException] -or $attempt -eq $ReadAttempts) {
+                throw "Could not copy '$Source' to '$Destination' after $attempt attempt(s). $($cause.Message) If this is a OneDrive file, ensure OneDrive is running and select 'Always keep on this device' for the source folder, then wait for downloading to finish and rerun."
+            }
+            Write-Warning "Copy failed for '$Source' (attempt $attempt/$ReadAttempts): $($cause.Message) Retrying in $RetryDelaySeconds seconds."
+            Start-Sleep -Seconds $RetryDelaySeconds
+        }
+    }
 }
 
 $sourceFullPath = Get-UnresolvedFullPath -Path $SourceRoot
@@ -189,73 +213,101 @@ foreach ($subFolderName in @($SubFolderNames) + @($RootFolderNames)) {
             New-Item -ItemType Directory -Path $outputFullPath | Out-Null
         }
 
-        $zipStream = [System.IO.File]::Open(
-            $zipPath,
-            [System.IO.FileMode]::OpenOrCreate,
-            [System.IO.FileAccess]::ReadWrite,
-            [System.IO.FileShare]::None
-        )
-
+        # Work locally so a failed cloud read never changes the published archive.
+        $workingZipPath = [System.IO.Path]::GetTempFileName()
+        $stagedFilePath = [System.IO.Path]::GetTempFileName()
+        $publishPath = Join-Path $outputFullPath ('.' + $zipBaseName + '.' + [guid]::NewGuid().ToString('N') + '.tmp')
         try {
-            $zip = [System.IO.Compression.ZipArchive]::new(
-                $zipStream,
-                [System.IO.Compression.ZipArchiveMode]::Update
+            Write-Host "Updating $zipBaseName.zip ($($entriesToWrite.Count) source files)..."
+            if ($zipExists) {
+                Copy-FileWithRetry -Source $zipPath -Destination $workingZipPath
+            }
+            $zipStream = [System.IO.File]::Open(
+                $workingZipPath,
+                [System.IO.FileMode]::OpenOrCreate,
+                [System.IO.FileAccess]::ReadWrite,
+                [System.IO.FileShare]::None
             )
+
             try {
-                $zipTouched = -not $zipExists
+                $zip = [System.IO.Compression.ZipArchive]::new(
+                    $zipStream,
+                    [System.IO.Compression.ZipArchiveMode]::Update
+                )
+                try {
+                    $zipTouched = -not $zipExists
 
-                $legacyEntries = @($zip.Entries | Where-Object {
-                    $entryFullName = $_.FullName
-                    $dateEntryPrefixes | Where-Object { $entryFullName.StartsWith($_, [System.StringComparison]::OrdinalIgnoreCase) }
-                })
+                    $legacyEntries = @($zip.Entries | Where-Object {
+                        $entryFullName = $_.FullName
+                        $dateEntryPrefixes | Where-Object { $entryFullName.StartsWith($_, [System.StringComparison]::OrdinalIgnoreCase) }
+                    })
 
-                foreach ($legacyEntry in $legacyEntries) {
-                    $legacyEntry.Delete()
-                    $summary.LegacyDateEntriesRemoved++
-                    $zipTouched = $true
-                }
-
-                foreach ($entryName in ($entriesToWrite.Keys | Sort-Object)) {
-                    $jsonFile = $entriesToWrite[$entryName].File
-                    $entry = $zip.GetEntry($entryName)
-
-                    $shouldWrite = $Force -or $null -eq $entry
-                    if (-not $shouldWrite) {
-                        $entryLastWriteUtc = $entry.LastWriteTime.UtcDateTime
-                        $sourceIsNewer = ($jsonFile.LastWriteTimeUtc - $entryLastWriteUtc).TotalSeconds -gt 2
-                        $shouldWrite = $sourceIsNewer -or $jsonFile.Length -ne $entry.Length
+                    foreach ($legacyEntry in $legacyEntries) {
+                        $legacyEntry.Delete()
+                        $summary.LegacyDateEntriesRemoved++
+                        $zipTouched = $true
                     }
 
-                    if (-not $shouldWrite) {
-                        $summary.FilesSkipped++
-                        continue
+                    foreach ($entryName in ($entriesToWrite.Keys | Sort-Object)) {
+                        $jsonFile = $entriesToWrite[$entryName].File
+                        $entry = $zip.GetEntry($entryName)
+
+                        $shouldWrite = $Force -or $null -eq $entry
+                        if (-not $shouldWrite) {
+                            $entryLastWriteUtc = $entry.LastWriteTime.UtcDateTime
+                            $sourceIsNewer = ($jsonFile.LastWriteTimeUtc - $entryLastWriteUtc).TotalSeconds -gt 2
+                            $shouldWrite = $sourceIsNewer -or $jsonFile.Length -ne $entry.Length
+                        }
+
+                        if (-not $shouldWrite) {
+                            $summary.FilesSkipped++
+                            continue
+                        }
+
+                        # Fully download/read the source before deleting its previous entry.
+                        Copy-FileWithRetry -Source $jsonFile.FullName -Destination $stagedFilePath
+
+                        if ($null -ne $entry) {
+                            $entry.Delete()
+                            $summary.FilesUpdated++
+                        } else {
+                            $summary.FilesAdded++
+                        }
+
+                        [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                            $zip,
+                            $stagedFilePath,
+                            $entryName,
+                            [System.IO.Compression.CompressionLevel]::Optimal
+                        ) | Out-Null
+
+                        $zipTouched = $true
                     }
 
-                    if ($null -ne $entry) {
-                        $entry.Delete()
-                        $summary.FilesUpdated++
-                    } else {
-                        $summary.FilesAdded++
+                    if ($zipTouched) {
+                        $zipsTouched[$zipPath] = $true
                     }
-
-                    [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
-                        $zip,
-                        $jsonFile.FullName,
-                        $entryName,
-                        [System.IO.Compression.CompressionLevel]::Optimal
-                    ) | Out-Null
-
-                    $zipTouched = $true
-                }
-
-                if ($zipTouched) {
-                    $zipsTouched[$zipPath] = $true
+                } finally {
+                    $zip.Dispose()
                 }
             } finally {
-                $zip.Dispose()
+                $zipStream.Dispose()
+            }
+            if ($zipTouched) {
+                Copy-FileWithRetry -Source $workingZipPath -Destination $publishPath
+                # Replace on the destination volume only after the complete zip is closed.
+                if ($zipExists) {
+                    [System.IO.File]::Replace($publishPath, $zipPath, [System.Management.Automation.Language.NullString]::Value)
+                } else {
+                    [System.IO.File]::Move($publishPath, $zipPath)
+                }
             }
         } finally {
-            $zipStream.Dispose()
+            foreach ($temporaryPath in @($workingZipPath, $stagedFilePath, $publishPath)) {
+                if ([System.IO.File]::Exists($temporaryPath)) {
+                    [System.IO.File]::Delete($temporaryPath)
+                }
+            }
         }
     }
 }
