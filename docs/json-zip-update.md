@@ -2,13 +2,19 @@
 
 Use `scripts\Update-JsonZips.ps1` to scan a source folder that contains dated folders, then create or update one zip file for each expected JSON subfolder.
 
-The source path is provided when you run the command, so the same script works whether the files live on `C:`, `D:`, or another local drive.
+The source folder is detected on each machine, so the same launcher works whether the files live on `C:`, `D:`, or another drive, and whether the Windows user name changes.
 
 ## Default command
 
+Double-click `run_json_zip_update.bat`, or run:
+
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\Update-JsonZips.ps1 -SourceRoot "C:\Users\Massimo Cristi\OneDrive - Savvy Loan Products Ltd\US Product\US_Application_Data" -Recurse
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Update-JsonZips.ps1 -Recurse
 ```
+
+Automatic detection checks `US Product\US_Application_Data` beneath the current machine's OneDrive folders, using its OneDrive environment variables and registered accounts. It also checks known locations on available filesystem drives: `OneDrive - Savvy Loan Products Ltd\US Product\US_Application_Data`, `US Product\US_Application_Data`, and `US_Application_Data`, plus the configured OneDrive folder layout on each drive. These are direct folder checks; the script does not search entire drives recursively.
+
+The script prints the resolved source folder before processing. If no source is found, or several different folders match, supply the intended folder explicitly. An explicit path always takes precedence and must exist.
 
 By default, zips are written under:
 
@@ -48,6 +54,14 @@ The zip files do not contain dated folders. If the same JSON path exists in mult
 
 ## Different drive or output folder
 
+To use a source outside the detected locations, pass it to the launcher:
+
+```powershell
+.\run_json_zip_update.bat "D:\US Product\US_Application_Data"
+```
+
+Or supply a source and optional output folder directly:
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\Update-JsonZips.ps1 -SourceRoot "D:\US Product\US_Application_Data" -OutputRoot "D:\US Product\US_Application_Data_Zips" -Recurse
 ```
@@ -55,7 +69,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\Update-JsonZips.ps1 -SourceRo
 ## Preview changes
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\Update-JsonZips.ps1 -SourceRoot "C:\Users\Massimo Cristi\OneDrive - Savvy Loan Products Ltd\US Product\US_Application_Data" -Recurse -WhatIf
+powershell -ExecutionPolicy Bypass -File .\scripts\Update-JsonZips.ps1 -Recurse -WhatIf
 ```
 
 ## Notes
@@ -84,8 +98,15 @@ In File Explorer, right-click the source folder and select **Always keep on this
 If an earlier version of the script failed, rerun once with `-Force` to replace any incomplete entries left by that run:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Update-JsonZips.ps1 -SourceRoot "C:\Users\Massimo Cristi\OneDrive - Savvy Loan Products Ltd\US Product\US_Application_Data" -Recurse -Force
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Update-JsonZips.ps1 -Recurse -Force
 ```
 
-Run the local regression checks with `powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-JsonZipUpdate.ps1`. These use temporary fixtures, including a locked source file to verify retries and preservation of the existing archive on failure.
+Run the local regression checks:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-JsonSourceRoot.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-JsonZipUpdate.ps1
+```
+
+These use temporary fixtures to check source discovery and zip updates, including a locked source file to verify retries and preservation of the existing archive on failure.
 

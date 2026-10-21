@@ -1,6 +1,5 @@
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
-    [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string]$SourceRoot,
 
@@ -94,10 +93,9 @@ function Copy-FileWithRetry {
     }
 }
 
-$sourceFullPath = Get-UnresolvedFullPath -Path $SourceRoot
-if (-not (Test-Path -LiteralPath $sourceFullPath -PathType Container)) {
-    throw "SourceRoot does not exist or is not a folder: $sourceFullPath"
-}
+. (Join-Path $PSScriptRoot 'Resolve-JsonSourceRoot.ps1')
+$sourceFullPath = Resolve-JsonSourceRoot -SourceRoot $SourceRoot
+Write-Host "Updating JSON zip files from: $sourceFullPath"
 
 if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
     $OutputRoot = Join-Path -Path $sourceFullPath -ChildPath '_json_zips'
