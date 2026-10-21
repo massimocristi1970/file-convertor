@@ -33,7 +33,7 @@ try {
     Assert-True (-not (Test-Path (Join-Path $testRoot '_json_zips'))) 'WhatIf created output'
     $result = & $scriptPath -SourceRoot $testRoot -Recurse
     $zipPath = Join-Path $testRoot '_json_zips\Applications.zip'
-    Assert-True ($result.ZipsTouched -eq 8 -and $result.FilesAdded -eq 3) 'Initial summary incorrect'
+    Assert-True ($result.ZipsTouched -eq 2 -and $result.FilesAdded -eq 3) 'Initial summary incorrect'
     Assert-True ((Read-ZipText $zipPath 'same.json') -eq '{"version":2}') 'Latest dated file did not win'
     Assert-True ((Read-ZipText $zipPath 'nested/child.json') -eq '{}') 'Recursive entry missing'
     Assert-True ((Read-ZipText (Join-Path $testRoot '_json_zips\onescore_missing.zip') 'data.xml') -eq '<data/>') 'Root XML missing'
@@ -62,6 +62,104 @@ try {
     try { Assert-True ($null -eq $archive.GetEntry('2026-09-01/legacy.json')) 'Legacy entry retained' } finally { $archive.Dispose() }
     $result = & $scriptPath -SourceRoot $testRoot -Recurse -Force
     Assert-True ($result.FilesUpdated -eq 3) 'Force did not rewrite all source entries'
+
+    # Dated XML reports must be exported even when a JSON placeholder exists
+    # for the same application (the real 100747 failure).
+    $bankFolder = Join-Path $testRoot '2026-09-02\OpenBanking'
+    New-Item -ItemType Directory -Path $bankFolder | Out-Null
+    $bankXml = Join-Path $bankFolder '100747.xml'
+    [System.IO.File]::WriteAllText($bankXml, '<report><amount>100</amount></report>')
+    [System.IO.File]::WriteAllText((Join-Path $bankFolder '100747_157.json'), "`r`n")
+    [System.IO.File]::WriteAllText((Join-Path $bankFolder '100748.json'), 'Not Acceptable')
+    $excludedWarnings = @()
+    $result = & $scriptPath -SourceRoot $testRoot -Recurse -WarningVariable excludedWarnings
+    $bankZip = Join-Path $testRoot '_json_zips\OpenBanking.zip'
+    Assert-True ((Read-ZipText $bankZip '100747.xml') -eq '<report><amount>100</amount></report>') 'Dated XML report omitted'
+    Assert-True ($result.NonReportsExcluded -eq 2 -and $excludedWarnings.Count -eq 2) 'Non-report exclusions were not reported'
+    $archive = [System.IO.Compression.ZipFile]::OpenRead($bankZip)
+    try {
+        Assert-True ($null -eq $archive.GetEntry('100747_157.json')) 'Blank JSON included as a report'
+        Assert-True ($null -eq $archive.GetEntry('100748.json')) 'Provider error included as a report'
+    } finally { $archive.Dispose() }
+
+    # Same-size changes can occur without a newer filesystem timestamp.
+    $originalTime = [System.IO.File]::GetLastWriteTimeUtc($bankXml)
+    [System.IO.File]::WriteAllText($bankXml, '<report><amount>200</amount></report>')
+    [System.IO.File]::SetLastWriteTimeUtc($bankXml, $originalTime)
+    $result = & $scriptPath -SourceRoot $testRoot -Recurse -WarningAction SilentlyContinue
+    Assert-True ((Read-ZipText $bankZip '100747.xml') -eq '<report><amount>200</amount></report>') 'Same-size changed source was skipped'
+
+    # A full snapshot removes stale flat entries and duplicate ZIP names.
+    $archive = [System.IO.Compression.ZipFile]::Open($bankZip, 'Update')
+    try {
+        $archive.CreateEntry('obsolete.xml') | Out-Null
+        $archive.CreateEntry('100747.xml') | Out-Null
+    } finally { $archive.Dispose() }
+    $result = & $scriptPath -SourceRoot $testRoot -Recurse -WarningAction SilentlyContinue
+    Assert-True ($result.StaleEntriesRemoved -eq 1) 'Stale flat archive entry was retained'
+    $archive = [System.IO.Compression.ZipFile]::OpenRead($bankZip)
+    try {
+        Assert-True ($null -eq $archive.GetEntry('obsolete.xml')) 'Obsolete flat XML retained'
+        Assert-True (@($archive.Entries | Where-Object FullName -eq '100747.xml').Count -eq 1) 'Duplicate ZIP entry retained'
+    } finally { $archive.Dispose() }
+
+    # A partial date update must retain reports from dates outside its scope.
+    $result = & $scriptPath -SourceRoot $testRoot -Recurse -DateFolderPattern '2026-09-01'
+    Assert-True ($result.SnapshotMode -eq 'Partial update') 'Partial date scope was treated as a complete inventory'
+    Assert-True ((Read-ZipText $bankZip '100747.xml') -eq '<report><amount>200</amount></report>') 'Partial date update removed an unselected report'
+    $archive = [System.IO.Compression.ZipFile]::Open($bankZip, 'Update')
+    try { $archive.CreateEntry('retained.xml') | Out-Null } finally { $archive.Dispose() }
+    $result = & $scriptPath -SourceRoot $testRoot -Recurse -PreserveExistingEntries -WarningAction SilentlyContinue
+    $archive = [System.IO.Compression.ZipFile]::OpenRead($bankZip)
+    try { Assert-True ($null -ne $archive.GetEntry('retained.xml')) 'Explicit additive update removed an existing report' }
+    finally { $archive.Dispose() }
+
+    # A newer blank/error export must not hide an older valid source at the
+    # same relative path. Exclusion warnings identify the rejected source.
+    [System.IO.File]::WriteAllText($sourceFile, 'Not Acceptable')
+    $result = & $scriptPath -SourceRoot $testRoot -Recurse -WarningAction SilentlyContinue
+    Assert-True ((Read-ZipText $zipPath 'same.json') -eq '{"version":1}') 'Newer provider error hid an older valid report'
+    Assert-True ($result.NonReportsExcluded -eq 3) 'Fallback source exclusion count incorrect'
+
+    # Removing a source removes its flat archive entry on the next full run.
+    [System.IO.File]::Delete($bankXml)
+    $result = & $scriptPath -SourceRoot $testRoot -Recurse -WarningAction SilentlyContinue
+    $archive = [System.IO.Compression.ZipFile]::OpenRead($bankZip)
+    try { Assert-True ($null -eq $archive.GetEntry('100747.xml')) 'Removed source retained in full snapshot' }
+    finally { $archive.Dispose() }
+
+    # A wrong empty root must fail before touching any existing publication.
+    $outputFolder = Join-Path $testRoot '_json_zips'
+    $emptySource = Join-Path $testRoot 'empty-source'
+    New-Item -ItemType Directory -Path $emptySource | Out-Null
+    $beforeApplications = (Get-FileHash -LiteralPath $zipPath).Hash
+    $beforeBank = (Get-FileHash -LiteralPath $bankZip).Hash
+    $caught = $null
+    try { & $scriptPath -SourceRoot $emptySource -OutputRoot $outputFolder -Recurse | Out-Null }
+    catch { $caught = $_ }
+    Assert-True ($null -ne $caught -and $caught.ToString().Contains('aborted before publication')) 'Empty full source was not rejected'
+    Assert-True ((Get-FileHash -LiteralPath $zipPath).Hash -eq $beforeApplications) 'Empty source changed application archive'
+    Assert-True ((Get-FileHash -LiteralPath $bankZip).Hash -eq $beforeBank) 'Empty source changed bank archive'
+
+    # Missing one source role must also be detected before another role's
+    # changed report is published.
+    $incompleteSource = Join-Path $testRoot 'incomplete-source'
+    $incompleteApplication = Join-Path $incompleteSource '2026-09-09\Application'
+    New-Item -ItemType Directory -Path $incompleteApplication | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $incompleteApplication 'same.json'), '{"version":555}')
+    $caught = $null
+    try { & $scriptPath -SourceRoot $incompleteSource -OutputRoot $outputFolder -Recurse | Out-Null }
+    catch { $caught = $_ }
+    Assert-True ($null -ne $caught -and $caught.ToString().Contains("no 'OpenBanking' source folder")) 'Missing published source role was not rejected'
+    Assert-True ((Get-FileHash -LiteralPath $zipPath).Hash -eq $beforeApplications) 'Another archive was published before missing-role preflight'
+    Assert-True ((Get-FileHash -LiteralPath $bankZip).Hash -eq $beforeBank) 'Missing role changed published bank archive'
+
+    # An empty partial selection and explicit additive mode remain safe.
+    $result = & $scriptPath -SourceRoot $emptySource -OutputRoot $outputFolder -DateFolderPattern '2026-10-20'
+    Assert-True ($result.SnapshotMode -eq 'Partial update') 'Empty partial selection incorrectly rejected'
+    Assert-True ((Get-FileHash -LiteralPath $bankZip).Hash -eq $beforeBank) 'Empty partial selection changed bank archive'
+    $result = & $scriptPath -SourceRoot $emptySource -OutputRoot $outputFolder -PreserveExistingEntries
+    Assert-True ((Get-FileHash -LiteralPath $zipPath).Hash -eq $beforeApplications) 'Empty additive update changed application archive'
     Write-Host 'All JSON zip update tests passed.'
 } finally {
     $resolvedTestRoot = [System.IO.Path]::GetFullPath($testRoot)

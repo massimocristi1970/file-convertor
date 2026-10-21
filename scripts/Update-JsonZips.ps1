@@ -33,7 +33,11 @@ param(
     [ValidateRange(0, 60)]
     [int]$RetryDelaySeconds = 5,
 
-    [switch]$Force
+    [switch]$Force,
+
+    # Partial date selections retain entries from unselected dates automatically.
+    # Use this switch for an intentionally additive full-source update.
+    [switch]$PreserveExistingEntries
 )
 
 Set-StrictMode -Version Latest
@@ -93,6 +97,28 @@ function Copy-FileWithRetry {
     }
 }
 
+function Get-StreamHash {
+    param([System.IO.Stream]$Stream)
+    $algorithm = [System.Security.Cryptography.SHA256]::Create()
+    try { return [System.BitConverter]::ToString($algorithm.ComputeHash($Stream)) }
+    finally { $algorithm.Dispose() }
+}
+
+function Get-FileContentHash {
+    param([string]$Path)
+    $stream = [System.IO.File]::OpenRead($Path)
+    try { return Get-StreamHash -Stream $stream }
+    finally { $stream.Dispose() }
+}
+
+function Get-NonReportReason {
+    param([string]$Path)
+    $text = [System.IO.File]::ReadAllText($Path).Trim()
+    if ([string]::IsNullOrWhiteSpace($text)) { return 'Empty report export' }
+    if ($text -ceq 'Not Acceptable') { return 'Provider returned Not Acceptable' }
+    return $null
+}
+
 . (Join-Path $PSScriptRoot 'Resolve-JsonSourceRoot.ps1')
 $sourceFullPath = Resolve-JsonSourceRoot -SourceRoot $SourceRoot
 Write-Host "Updating JSON zip files from: $sourceFullPath"
@@ -121,10 +147,12 @@ $fileSearchOption = if ($Recurse) {
 }
 
 $workByZip = @{}
+$foldersScannedByZip = @{}
 $matchingSubFoldersScanned = 0
 
 foreach ($subFolderName in @($SubFolderNames) + @($RootFolderNames)) {
     $workByZip[$subFolderName] = @{}
+    $foldersScannedByZip[$subFolderName] = 0
 }
 
 foreach ($dateFolder in $dateFolders) {
@@ -144,21 +172,27 @@ foreach ($dateFolder in $dateFolders) {
             }
 
             $matchingSubFoldersScanned++
+            $foldersScannedByZip[$subFolderName]++
             $jsonFiles = @([System.IO.Directory]::EnumerateFiles(
                 $subFolderPath,
-                '*.json',
+                '*',
                 $fileSearchOption
-            ) | Sort-Object)
+            ) | Where-Object { [System.IO.Path]::GetExtension($_) -in @('.json', '.xml') } | Sort-Object)
 
             foreach ($jsonFilePath in $jsonFiles) {
                 $jsonFile = Get-Item -LiteralPath $jsonFilePath
                 $relativeJsonPath = Get-RelativePath -BasePath $subFolderPath -TargetPath $jsonFile.FullName
                 $entryName = ConvertTo-ZipEntryName -RelativePath $relativeJsonPath
 
-                # If the same JSON path exists in multiple dated folders, the latest dated folder wins.
+                # If the same report path exists in multiple dated folders, the latest dated folder wins.
+                $previousCandidates = @()
+                if ($workByZip[$subFolderName].ContainsKey($entryName)) {
+                    $previousCandidates = @($workByZip[$subFolderName][$entryName].Candidates)
+                }
                 $workByZip[$subFolderName][$entryName] = [pscustomobject]@{
                     File = $jsonFile
                     DateFolderName = $dateFolder.Name
+                    Candidates = @($previousCandidates) + @($jsonFile)
                 }
             }
         }
@@ -172,11 +206,12 @@ foreach ($rootFolderName in $RootFolderNames) {
     }
 
     $matchingSubFoldersScanned++
+    $foldersScannedByZip[$rootFolderName]++
     $sourceFiles = @([System.IO.Directory]::EnumerateFiles(
         $rootFolderPath,
         '*',
         $fileSearchOption
-    ) | Sort-Object)
+    ) | Where-Object { [System.IO.Path]::GetExtension($_) -in @('.json', '.xml') } | Sort-Object)
 
     foreach ($sourceFilePath in $sourceFiles) {
         $sourceFile = Get-Item -LiteralPath $sourceFilePath
@@ -185,9 +220,25 @@ foreach ($rootFolderName in $RootFolderNames) {
         $workByZip[$rootFolderName][$entryName] = [pscustomobject]@{
             File = $sourceFile
             DateFolderName = $null
+            Candidates = @($sourceFile)
         }
     }
 }
+
+$mirrorInventory = -not $PreserveExistingEntries -and $DateFolderPattern -eq '*'
+if ($mirrorInventory) {
+    # Validate every existing archive before publishing any archive. An absent
+    # source folder can mean a wrong root or an incomplete OneDrive inventory.
+    # A folder that exists and is intentionally empty remains a valid snapshot.
+    foreach ($subFolderName in @($SubFolderNames) + @($RootFolderNames)) {
+        $zipBaseName = if ($subFolderName -ieq 'Application') { 'Applications' } else { $subFolderName }
+        $zipPath = Join-Path -Path $outputFullPath -ChildPath ($zipBaseName + '.zip')
+        if ($foldersScannedByZip[$subFolderName] -eq 0 -and (Test-Path -LiteralPath $zipPath -PathType Leaf)) {
+            throw "Full source snapshot aborted before publication: no '$subFolderName' source folder was found, but '$zipPath' already exists. No published archives were changed. Check SourceRoot and the downloaded source folders, or use -PreserveExistingEntries for an intentional additive update."
+        }
+    }
+}
+
 $summary = [ordered]@{
     DateFoldersScanned = $dateFolders.Count
     MatchingSubFoldersScanned = $matchingSubFoldersScanned
@@ -196,6 +247,9 @@ $summary = [ordered]@{
     FilesUpdated = 0
     FilesSkipped = 0
     LegacyDateEntriesRemoved = 0
+    StaleEntriesRemoved = 0
+    NonReportsExcluded = 0
+    SnapshotMode = if ($PreserveExistingEntries -or $DateFolderPattern -ne '*') { 'Partial update' } else { 'Full source snapshot' }
 }
 $zipsTouched = @{}
 $dateEntryPrefixes = @($dateFolders | ForEach-Object { $_.Name + '/' })
@@ -205,6 +259,8 @@ foreach ($subFolderName in @($SubFolderNames) + @($RootFolderNames)) {
     $zipBaseName = if ($subFolderName -ieq 'Application') { 'Applications' } else { $subFolderName }
     $zipPath = Join-Path -Path $outputFullPath -ChildPath ($zipBaseName + '.zip')
     $zipExists = Test-Path -LiteralPath $zipPath -PathType Leaf
+    # Do not manufacture empty archives for source roles absent from this root.
+    if ($foldersScannedByZip[$subFolderName] -eq 0 -and -not $zipExists) { continue }
 
     if ($PSCmdlet.ShouldProcess($zipPath, "Update flat JSON zip for $subFolderName")) {
         if (-not (Test-Path -LiteralPath $outputFullPath -PathType Container)) {
@@ -219,6 +275,21 @@ foreach ($subFolderName in @($SubFolderNames) + @($RootFolderNames)) {
             Write-Host "Updating $zipBaseName.zip ($($entriesToWrite.Count) source files)..."
             if ($zipExists) {
                 Copy-FileWithRetry -Source $zipPath -Destination $workingZipPath
+            }
+            # Hash through read-only streams before opening Update mode. Update
+            # streams buffer expanded entry bodies, which is costly for large ZIPs.
+            $previousEntryHashes = @{}
+            if ($zipExists -and -not $Force) {
+                $comparisonZip = [System.IO.Compression.ZipFile]::OpenRead($workingZipPath)
+                try {
+                    foreach ($comparisonEntry in $comparisonZip.Entries) {
+                        if (-not $entriesToWrite.ContainsKey($comparisonEntry.FullName)) { continue }
+                        $comparisonStream = $comparisonEntry.Open()
+                        try { $comparisonHash = Get-StreamHash -Stream $comparisonStream }
+                        finally { $comparisonStream.Dispose() }
+                        $previousEntryHashes[$comparisonEntry.FullName] = $comparisonHash
+                    }
+                } finally { $comparisonZip.Dispose() }
             }
             $zipStream = [System.IO.File]::Open(
                 $workingZipPath,
@@ -246,38 +317,76 @@ foreach ($subFolderName in @($SubFolderNames) + @($RootFolderNames)) {
                         $zipTouched = $true
                     }
 
-                    foreach ($entryName in ($entriesToWrite.Keys | Sort-Object)) {
-                        $jsonFile = $entriesToWrite[$entryName].File
-                        $entry = $zip.GetEntry($entryName)
+                    if ($mirrorInventory) {
+                        # The complete source inventory owns this archive. Do not
+                        # retain old flat XML/JSON entries that no longer exist.
+                        $staleEntries = @($zip.Entries | Where-Object { -not $entriesToWrite.ContainsKey($_.FullName) })
+                        foreach ($staleEntry in $staleEntries) {
+                            $staleEntry.Delete()
+                            $summary.StaleEntriesRemoved++
+                            $zipTouched = $true
+                        }
+                    }
 
-                        $shouldWrite = $Force -or $null -eq $entry
-                        if (-not $shouldWrite) {
-                            $entryLastWriteUtc = $entry.LastWriteTime.UtcDateTime
-                            $sourceIsNewer = ($jsonFile.LastWriteTimeUtc - $entryLastWriteUtc).TotalSeconds -gt 2
-                            $shouldWrite = $sourceIsNewer -or $jsonFile.Length -ne $entry.Length
+                    $existingEntriesByName = @{}
+                    foreach ($existingEntry in $zip.Entries) {
+                        if (-not $existingEntriesByName.ContainsKey($existingEntry.FullName)) {
+                            $existingEntriesByName[$existingEntry.FullName] = @()
+                        }
+                        $existingEntriesByName[$existingEntry.FullName] += @($existingEntry)
+                    }
+
+                    foreach ($entryName in ($entriesToWrite.Keys | Sort-Object)) {
+                        $existingEntries = @()
+                        if ($existingEntriesByName.ContainsKey($entryName)) {
+                            $existingEntries = @($existingEntriesByName[$entryName])
+                        }
+                        $sourceCandidates = @($entriesToWrite[$entryName].Candidates)
+                        [array]::Reverse($sourceCandidates)
+                        $jsonFile = $null
+                        foreach ($sourceCandidate in $sourceCandidates) {
+                            # Read every chosen source fully before changing the staged ZIP.
+                            Copy-FileWithRetry -Source $sourceCandidate.FullName -Destination $stagedFilePath
+                            $nonReportReason = Get-NonReportReason -Path $stagedFilePath
+                            if ($null -eq $nonReportReason) {
+                                $jsonFile = $sourceCandidate
+                                break
+                            }
+                            $summary.NonReportsExcluded++
+                            Write-Warning "$nonReportReason; excluded source '$($sourceCandidate.FullName)' from $zipBaseName.zip`: $entryName"
+                        }
+                        if ($null -eq $jsonFile) {
+                            foreach ($existingEntry in $existingEntries) {
+                                $existingEntry.Delete()
+                                $summary.StaleEntriesRemoved++
+                                $zipTouched = $true
+                            }
+                            continue
                         }
 
+                        $shouldWrite = $Force -or $existingEntries.Count -ne 1
+                        if (-not $shouldWrite) {
+                            $shouldWrite = $previousEntryHashes[$entryName] -ne (Get-FileContentHash -Path $stagedFilePath)
+                        }
                         if (-not $shouldWrite) {
                             $summary.FilesSkipped++
                             continue
                         }
 
-                        # Fully download/read the source before deleting its previous entry.
-                        Copy-FileWithRetry -Source $jsonFile.FullName -Destination $stagedFilePath
-
-                        if ($null -ne $entry) {
-                            $entry.Delete()
+                        if ($existingEntries.Count -gt 0) {
+                            foreach ($existingEntry in $existingEntries) { $existingEntry.Delete() }
                             $summary.FilesUpdated++
                         } else {
                             $summary.FilesAdded++
                         }
 
-                        [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                        $newEntry = [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
                             $zip,
                             $stagedFilePath,
                             $entryName,
                             [System.IO.Compression.CompressionLevel]::Optimal
-                        ) | Out-Null
+                        )
+                        $newEntry.LastWriteTime = $jsonFile.LastWriteTimeUtc
 
                         $zipTouched = $true
                     }
