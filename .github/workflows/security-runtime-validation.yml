@@ -1,0 +1,67 @@
+name: Security runtime validation
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install verified Node.js 24.22.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/node-v24.22.1-linux-x64.tar.xz"
+          curl --fail --show-error --location --proto '=https' --tlsv1.2 https://nodejs.org/dist/v24.22.1/node-v24.22.1-linux-x64.tar.xz --output "$archive"
+          echo "6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6  $archive" | sha256sum --check
+          tar --extract --xz --file "$archive" --directory "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/node-v24.22.1-linux-x64/bin" >> "$GITHUB_PATH"
+      - name: Verify Node.js runtime and HTTPS trust
+        shell: bash
+        run: |
+          node <<'NODE'
+          const https = require('node:https');
+          if (process.version !== 'v24.22.1') throw new Error('Unexpected Node version');
+          async function probe(url) {
+            return new Promise(resolve => {
+              const req = https.get(url, {timeout: 30000}, res => {
+                res.resume();
+                resolve({accepted: true, status: res.statusCode});
+              });
+              req.on('timeout', () => req.destroy(new Error('TLS probe timed out')));
+              req.on('error', e => resolve({accepted: false, code: e.code, message: e.message}));
+            });
+          }
+          (async () => {
+            const positive = await probe('https://pypi.org/simple/pip/');
+            if (positive.status !== 200) throw new Error('Valid HTTPS control failed: ' + JSON.stringify(positive));
+            const hosts = ['dv-g3b-emudhra.we-have-a-problem.com', 'dv-g3b-aaa-emudhra.we-have-a-problem.com',
+              'dv-g3b-noct-emudhra.we-have-a-problem.com', 'dv-g3b-aaa-noct-emudhra.we-have-a-problem.com'];
+            const results = [];
+            for (const host of hosts) {
+              const result = await probe('https://' + host);
+              if (result.accepted || !/CERT|ISSUER|SIGNATURE|PUBLIC_KEY/.test(result.code || '') ||
+                  /expired|not yet valid|hostname|altname/i.test(result.message || '')) {
+                throw new Error('Expected real trust rejection: ' + JSON.stringify({host, ...result}));
+              }
+              results.push({host, ...result});
+            }
+            console.log(JSON.stringify({passed: true, node: process.version, openssl: process.versions.openssl,
+              positive, certificate_rejections: results}));
+          })().catch(e => {console.error(e); process.exitCode = 1;});
+          NODE
+      - name: Validate application scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm run check:web
