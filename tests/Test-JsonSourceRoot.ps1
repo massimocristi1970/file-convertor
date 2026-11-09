@@ -53,6 +53,7 @@ function Get-ChildItem {
         [string[]]$Path,
         [string[]]$LiteralPath,
         [switch]$Directory,
+        [switch]$File,
         [string]$Filter
     )
     $requestedPaths = if ($PSBoundParameters.ContainsKey('LiteralPath')) { $LiteralPath } else { $Path }

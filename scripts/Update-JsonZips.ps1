@@ -97,6 +97,176 @@ function Copy-FileWithRetry {
     }
 }
 
+function Get-SourceArchiveWithRetry {
+    param([string]$Path)
+
+    if ($script:sourceArchiveCache.ContainsKey($Path)) {
+        return $script:sourceArchiveCache[$Path]
+    }
+
+    for ($attempt = 1; $attempt -le $ReadAttempts; $attempt++) {
+        $archive = $null
+        try {
+            $archive = [System.IO.Compression.ZipFile]::OpenRead($Path)
+            $entries = [System.Collections.Generic.List[object]]::new()
+            $entryLookup = [System.Collections.Generic.Dictionary[string, object]]::new(
+                [System.StringComparer]::Ordinal
+            )
+            $duplicateEntryNames = [System.Collections.Generic.HashSet[string]]::new(
+                [System.StringComparer]::Ordinal
+            )
+            # Materialize and index the central directory inside the retry
+            # boundary. Candidate reads can then find entries in O(1) time.
+            foreach ($entry in $archive.Entries) {
+                [void]$entries.Add($entry)
+                if ($entryLookup.ContainsKey($entry.FullName)) {
+                    [void]$duplicateEntryNames.Add($entry.FullName)
+                } else {
+                    $entryLookup.Add($entry.FullName, $entry)
+                }
+            }
+            $sourceArchive = [pscustomobject]@{
+                Archive = $archive
+                Entries = $entries
+                EntryLookup = $entryLookup
+                DuplicateEntryNames = $duplicateEntryNames
+            }
+            $script:sourceArchiveCache[$Path] = $sourceArchive
+            return $sourceArchive
+        } catch {
+            $cause = $_.Exception.GetBaseException()
+            if ($null -ne $archive) { $archive.Dispose() }
+            if ($cause -isnot [System.IO.IOException] -or $attempt -eq $ReadAttempts) {
+                throw "Could not open source archive '$Path' after $attempt attempt(s). $($cause.Message) If this is a OneDrive file, ensure OneDrive is running and select 'Always keep on this device', then wait for downloading to finish and rerun."
+            }
+            Write-Warning "Opening source archive failed for '$Path' (attempt $attempt/$ReadAttempts): $($cause.Message) Retrying in $RetryDelaySeconds seconds."
+            Start-Sleep -Seconds $RetryDelaySeconds
+        }
+    }
+}
+
+function Close-SourceArchive {
+    param([string]$Path)
+
+    if ($script:sourceArchiveCache.ContainsKey($Path)) {
+        $script:sourceArchiveCache[$Path].Archive.Dispose()
+        [void]$script:sourceArchiveCache.Remove($Path)
+    }
+}
+
+function Close-AllSourceArchives {
+    foreach ($archivePath in @($script:sourceArchiveCache.Keys)) {
+        Close-SourceArchive -Path $archivePath
+    }
+}
+
+function Copy-SourceCandidateWithRetry {
+    param($Candidate, [string]$Destination)
+
+    if ($Candidate.SourceKind -eq 'File') {
+        Copy-FileWithRetry -Source $Candidate.FilePath -Destination $Destination
+        return
+    }
+
+    for ($attempt = 1; $attempt -le $ReadAttempts; $attempt++) {
+        try {
+            $sourceArchive = Get-SourceArchiveWithRetry -Path $Candidate.ArchivePath
+            if ($sourceArchive.DuplicateEntryNames.Contains($Candidate.EntryFullName)) {
+                throw [System.IO.InvalidDataException]::new(
+                    "Duplicate '$($Candidate.EntryFullName)' entries exist in '$($Candidate.ArchivePath)'."
+                )
+            }
+            if (-not $sourceArchive.EntryLookup.ContainsKey($Candidate.EntryFullName)) {
+                throw [System.IO.InvalidDataException]::new(
+                    "Entry '$($Candidate.EntryFullName)' no longer exists in '$($Candidate.ArchivePath)'."
+                )
+            }
+
+            $sourceStream = $sourceArchive.EntryLookup[$Candidate.EntryFullName].Open()
+            try {
+                $destinationStream = [System.IO.File]::Open(
+                    $Destination,
+                    [System.IO.FileMode]::Create,
+                    [System.IO.FileAccess]::Write,
+                    [System.IO.FileShare]::None
+                )
+                try { $sourceStream.CopyTo($destinationStream) }
+                finally { $destinationStream.Dispose() }
+            } finally { $sourceStream.Dispose() }
+            return
+        } catch {
+            $cause = $_.Exception.GetBaseException()
+            Close-SourceArchive -Path $Candidate.ArchivePath
+            if ($cause -isnot [System.IO.IOException] -or $attempt -eq $ReadAttempts) {
+                throw "Could not read '$($Candidate.EntryFullName)' from '$($Candidate.ArchivePath)' after $attempt attempt(s). $($cause.Message)"
+            }
+            Write-Warning "Reading '$($Candidate.EntryFullName)' from '$($Candidate.ArchivePath)' failed (attempt $attempt/$ReadAttempts): $($cause.Message) Retrying in $RetryDelaySeconds seconds."
+            Start-Sleep -Seconds $RetryDelaySeconds
+        }
+    }
+}
+
+function ConvertTo-SafeRelativeEntryName {
+    param([string]$RelativePath, [string]$SourceDescription)
+
+    $normalized = $RelativePath.Replace('\', '/')
+    $segments = @($normalized.Split('/'))
+    $unsafeSegments = @($segments | Where-Object {
+        ($_ -in @('', '.', '..')) -or ([string]$_).Contains(':')
+    })
+    if ([string]::IsNullOrWhiteSpace($normalized) -or
+        $normalized.StartsWith('/') -or
+        $unsafeSegments.Count -gt 0) {
+        throw "Unsafe source archive entry path '$RelativePath' in '$SourceDescription'."
+    }
+    return $normalized
+}
+
+function New-FileSourceCandidate {
+    param([System.IO.FileInfo]$File)
+
+    return [pscustomobject]@{
+        SourceKind = 'File'
+        FilePath = $File.FullName
+        ArchivePath = $null
+        EntryFullName = $null
+        FullName = $File.FullName
+        LastWriteTimeUtc = $File.LastWriteTimeUtc
+    }
+}
+
+function New-ZipEntrySourceCandidate {
+    param([string]$ArchivePath, $Entry)
+
+    return [pscustomobject]@{
+        SourceKind = 'ZipEntry'
+        FilePath = $null
+        ArchivePath = $ArchivePath
+        EntryFullName = $Entry.FullName
+        FullName = "$ArchivePath::$($Entry.FullName)"
+        LastWriteTimeUtc = $Entry.LastWriteTime.UtcDateTime
+    }
+}
+
+function Add-SourceCandidate {
+    param(
+        [hashtable]$WorkByZip,
+        [string]$TargetName,
+        [string]$EntryName,
+        $Candidate,
+        [AllowNull()][string]$DateFolderName
+    )
+
+    $previousCandidates = @()
+    if ($WorkByZip[$TargetName].ContainsKey($EntryName)) {
+        $previousCandidates = @($WorkByZip[$TargetName][$EntryName].Candidates)
+    }
+    $WorkByZip[$TargetName][$EntryName] = [pscustomobject]@{
+        DateFolderName = $DateFolderName
+        Candidates = @($previousCandidates) + @($Candidate)
+    }
+}
+
 function Get-StreamHash {
     param([System.IO.Stream]$Stream)
     $algorithm = [System.Security.Cryptography.SHA256]::Create()
@@ -131,6 +301,9 @@ $outputFullPath = Get-UnresolvedFullPath -Path $OutputRoot
 
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
+$script:sourceArchiveCache = @{}
+
+try {
 
 $dateFolders = @(Get-ChildItem -LiteralPath $sourceFullPath -Directory |
     Where-Object {
@@ -140,6 +313,34 @@ $dateFolders = @(Get-ChildItem -LiteralPath $sourceFullPath -Directory |
     } |
     Sort-Object Name)
 
+$dateArchives = @(Get-ChildItem -LiteralPath $sourceFullPath -File -Filter '*.zip' |
+    Where-Object {
+        $_.BaseName -match '^\d{4}-\d{2}-\d{2}$' -and
+        $_.BaseName -like $DateFolderPattern
+    } |
+    Sort-Object BaseName)
+
+# Process sources chronologically. If an extracted folder and its archive both
+# exist, scan the folder first so the archive is the preferred candidate.
+$dateSources = @(@(
+    foreach ($dateFolder in $dateFolders) {
+        [pscustomobject]@{
+            DateFolderName = $dateFolder.Name
+            SourceKind = 'Folder'
+            SourcePriority = 0
+            Path = $dateFolder.FullName
+        }
+    }
+    foreach ($dateArchive in $dateArchives) {
+        [pscustomobject]@{
+            DateFolderName = $dateArchive.BaseName
+            SourceKind = 'Archive'
+            SourcePriority = 1
+            Path = $dateArchive.FullName
+        }
+    }
+) | Sort-Object DateFolderName, SourcePriority)
+
 $fileSearchOption = if ($Recurse) {
     [System.IO.SearchOption]::AllDirectories
 } else {
@@ -148,80 +349,149 @@ $fileSearchOption = if ($Recurse) {
 
 $workByZip = @{}
 $foldersScannedByZip = @{}
+$subFolderLookup = @{}
 $matchingSubFoldersScanned = 0
 
 foreach ($subFolderName in @($SubFolderNames) + @($RootFolderNames)) {
     $workByZip[$subFolderName] = @{}
     $foldersScannedByZip[$subFolderName] = 0
 }
+foreach ($subFolderName in $SubFolderNames) {
+    $subFolderLookup[$subFolderName] = $subFolderName
+}
 
-foreach ($dateFolder in $dateFolders) {
-    # Some imports contain an extra same-named date directory, for example
-    # 2026-09-10\2026-09-10\Application. Support both layouts.
-    $dateSearchRoots = @($dateFolder.FullName)
-    $nestedDatePath = Join-Path -Path $dateFolder.FullName -ChildPath $dateFolder.Name
-    if (Test-Path -LiteralPath $nestedDatePath -PathType Container) {
-        $dateSearchRoots += $nestedDatePath
-    }
+foreach ($dateSource in $dateSources) {
+    if ($dateSource.SourceKind -eq 'Folder') {
+        # Some extracted imports contain an extra same-named date directory,
+        # for example 2026-09-10\2026-09-10\Application.
+        $dateSearchRoots = @($dateSource.Path)
+        $nestedDatePath = Join-Path -Path $dateSource.Path -ChildPath $dateSource.DateFolderName
+        if (Test-Path -LiteralPath $nestedDatePath -PathType Container) {
+            $dateSearchRoots += $nestedDatePath
+        }
 
-    foreach ($subFolderName in $SubFolderNames) {
-        foreach ($dateSearchRoot in $dateSearchRoots) {
-            $subFolderPath = Join-Path -Path $dateSearchRoot -ChildPath $subFolderName
-            if (-not (Test-Path -LiteralPath $subFolderPath -PathType Container)) {
-                continue
-            }
-
-            $matchingSubFoldersScanned++
-            $foldersScannedByZip[$subFolderName]++
-            $jsonFiles = @([System.IO.Directory]::EnumerateFiles(
-                $subFolderPath,
-                '*',
-                $fileSearchOption
-            ) | Where-Object { [System.IO.Path]::GetExtension($_) -in @('.json', '.xml') } | Sort-Object)
-
-            foreach ($jsonFilePath in $jsonFiles) {
-                $jsonFile = Get-Item -LiteralPath $jsonFilePath
-                $relativeJsonPath = Get-RelativePath -BasePath $subFolderPath -TargetPath $jsonFile.FullName
-                $entryName = ConvertTo-ZipEntryName -RelativePath $relativeJsonPath
-
-                # If the same report path exists in multiple dated folders, the latest dated folder wins.
-                $previousCandidates = @()
-                if ($workByZip[$subFolderName].ContainsKey($entryName)) {
-                    $previousCandidates = @($workByZip[$subFolderName][$entryName].Candidates)
+        foreach ($subFolderName in $SubFolderNames) {
+            foreach ($dateSearchRoot in $dateSearchRoots) {
+                $subFolderPath = Join-Path -Path $dateSearchRoot -ChildPath $subFolderName
+                if (-not (Test-Path -LiteralPath $subFolderPath -PathType Container)) {
+                    continue
                 }
-                $workByZip[$subFolderName][$entryName] = [pscustomobject]@{
-                    File = $jsonFile
-                    DateFolderName = $dateFolder.Name
-                    Candidates = @($previousCandidates) + @($jsonFile)
+
+                $matchingSubFoldersScanned++
+                $foldersScannedByZip[$subFolderName]++
+                $sourceFiles = @([System.IO.Directory]::EnumerateFiles(
+                    $subFolderPath,
+                    '*',
+                    $fileSearchOption
+                ) | Where-Object { [System.IO.Path]::GetExtension($_) -in @('.json', '.xml') } | Sort-Object)
+
+                foreach ($sourceFilePath in $sourceFiles) {
+                    $sourceFile = Get-Item -LiteralPath $sourceFilePath
+                    $relativePath = Get-RelativePath -BasePath $subFolderPath -TargetPath $sourceFile.FullName
+                    $entryName = ConvertTo-ZipEntryName -RelativePath $relativePath
+                    Add-SourceCandidate -WorkByZip $workByZip -TargetName $subFolderName `
+                        -EntryName $entryName -Candidate (New-FileSourceCandidate -File $sourceFile) `
+                        -DateFolderName $dateSource.DateFolderName
                 }
             }
         }
+        continue
+    }
+
+    $sourceArchive = Get-SourceArchiveWithRetry -Path $dateSource.Path
+    $categoriesFound = @{}
+    $logicalEntryNames = @{}
+    foreach ($sourceEntry in $sourceArchive.Entries) {
+        $sourceEntryName = $sourceEntry.FullName.Replace('\', '/')
+        $segments = @($sourceEntryName.Split('/'))
+        if ($segments.Count -eq 0) { continue }
+
+        $categoryIndex = 0
+        if ($segments[0] -ieq $dateSource.DateFolderName) {
+            $categoryIndex = 1
+            if ($segments.Count -gt 1 -and $segments[1] -ieq $dateSource.DateFolderName) {
+                $categoryIndex = 2
+            }
+        }
+        if ($categoryIndex -ge $segments.Count) { continue }
+        $categoryName = $segments[$categoryIndex]
+        if (-not $subFolderLookup.ContainsKey($categoryName)) { continue }
+
+        $subFolderName = $subFolderLookup[$categoryName]
+        $categoriesFound[$subFolderName] = $true
+        if ($sourceEntryName.EndsWith('/') -or $categoryIndex + 1 -ge $segments.Count) { continue }
+        $relativePath = ($segments[($categoryIndex + 1)..($segments.Count - 1)] -join '/')
+        if ([string]::IsNullOrWhiteSpace($relativePath)) { continue }
+        if ([System.IO.Path]::GetExtension($relativePath) -notin @('.json', '.xml')) { continue }
+        if ($sourceArchive.DuplicateEntryNames.Contains($sourceEntry.FullName)) {
+            throw "Duplicate source archive entry '$($sourceEntry.FullName)' in '$($dateSource.Path)'."
+        }
+        $entryName = ConvertTo-SafeRelativeEntryName -RelativePath $relativePath -SourceDescription $dateSource.Path
+        $logicalEntryKey = $subFolderName + [char]0 + $entryName
+        if ($logicalEntryNames.ContainsKey($logicalEntryKey)) {
+            throw "Duplicate source archive mapping for '$subFolderName/$entryName' in '$($dateSource.Path)'."
+        }
+        $logicalEntryNames[$logicalEntryKey] = $true
+        Add-SourceCandidate -WorkByZip $workByZip -TargetName $subFolderName `
+            -EntryName $entryName -Candidate (New-ZipEntrySourceCandidate -ArchivePath $dateSource.Path -Entry $sourceEntry) `
+            -DateFolderName $dateSource.DateFolderName
+    }
+    foreach ($subFolderName in $categoriesFound.Keys) {
+        $matchingSubFoldersScanned++
+        $foldersScannedByZip[$subFolderName]++
     }
 }
 
 foreach ($rootFolderName in $RootFolderNames) {
     $rootFolderPath = Join-Path -Path $sourceFullPath -ChildPath $rootFolderName
-    if (-not (Test-Path -LiteralPath $rootFolderPath -PathType Container)) {
-        continue
+    if (Test-Path -LiteralPath $rootFolderPath -PathType Container) {
+        $matchingSubFoldersScanned++
+        $foldersScannedByZip[$rootFolderName]++
+        $sourceFiles = @([System.IO.Directory]::EnumerateFiles(
+            $rootFolderPath,
+            '*',
+            $fileSearchOption
+        ) | Where-Object { [System.IO.Path]::GetExtension($_) -in @('.json', '.xml') } | Sort-Object)
+
+        foreach ($sourceFilePath in $sourceFiles) {
+            $sourceFile = Get-Item -LiteralPath $sourceFilePath
+            $relativePath = Get-RelativePath -BasePath $rootFolderPath -TargetPath $sourceFile.FullName
+            $entryName = ConvertTo-ZipEntryName -RelativePath $relativePath
+            Add-SourceCandidate -WorkByZip $workByZip -TargetName $rootFolderName `
+                -EntryName $entryName -Candidate (New-FileSourceCandidate -File $sourceFile) -DateFolderName $null
+        }
     }
+
+    $rootArchivePath = Join-Path -Path $sourceFullPath -ChildPath ($rootFolderName + '.zip')
+    if (-not (Test-Path -LiteralPath $rootArchivePath -PathType Leaf)) { continue }
 
     $matchingSubFoldersScanned++
     $foldersScannedByZip[$rootFolderName]++
-    $sourceFiles = @([System.IO.Directory]::EnumerateFiles(
-        $rootFolderPath,
-        '*',
-        $fileSearchOption
-    ) | Where-Object { [System.IO.Path]::GetExtension($_) -in @('.json', '.xml') } | Sort-Object)
-
-    foreach ($sourceFilePath in $sourceFiles) {
-        $sourceFile = Get-Item -LiteralPath $sourceFilePath
-        $relativePath = Get-RelativePath -BasePath $rootFolderPath -TargetPath $sourceFile.FullName
-        $entryName = ConvertTo-ZipEntryName -RelativePath $relativePath
-        $workByZip[$rootFolderName][$entryName] = [pscustomobject]@{
-            File = $sourceFile
-            DateFolderName = $null
-            Candidates = @($sourceFile)
+    $sourceArchive = Get-SourceArchiveWithRetry -Path $rootArchivePath
+    $logicalEntryNames = @{}
+    $rootPrefix = $rootFolderName + '/'
+    foreach ($sourceEntry in $sourceArchive.Entries) {
+        $sourceEntryName = $sourceEntry.FullName.Replace('\', '/')
+        if ($sourceEntryName.EndsWith('/')) { continue }
+        if ($sourceEntryName.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $relativePath = $sourceEntryName.Substring($rootPrefix.Length)
+        } elseif (-not $sourceEntryName.Contains('/')) {
+            $relativePath = $sourceEntryName
+        } else {
+            continue
         }
+        if ([System.IO.Path]::GetExtension($relativePath) -notin @('.json', '.xml')) { continue }
+        if ($sourceArchive.DuplicateEntryNames.Contains($sourceEntry.FullName)) {
+            throw "Duplicate source archive entry '$($sourceEntry.FullName)' in '$rootArchivePath'."
+        }
+        $entryName = ConvertTo-SafeRelativeEntryName -RelativePath $relativePath -SourceDescription $rootArchivePath
+        if ($logicalEntryNames.ContainsKey($entryName)) {
+            throw "Duplicate source archive mapping for '$rootFolderName/$entryName' in '$rootArchivePath'."
+        }
+        $logicalEntryNames[$entryName] = $true
+        Add-SourceCandidate -WorkByZip $workByZip -TargetName $rootFolderName `
+            -EntryName $entryName -Candidate (New-ZipEntrySourceCandidate -ArchivePath $rootArchivePath -Entry $sourceEntry) `
+            -DateFolderName $null
     }
 }
 
@@ -241,6 +511,8 @@ if ($mirrorInventory) {
 
 $summary = [ordered]@{
     DateFoldersScanned = $dateFolders.Count
+    DateArchivesScanned = $dateArchives.Count
+    DateSourcesScanned = $dateSources.Count
     MatchingSubFoldersScanned = $matchingSubFoldersScanned
     ZipsTouched = 0
     FilesAdded = 0
@@ -252,7 +524,7 @@ $summary = [ordered]@{
     SnapshotMode = if ($PreserveExistingEntries -or $DateFolderPattern -ne '*') { 'Partial update' } else { 'Full source snapshot' }
 }
 $zipsTouched = @{}
-$dateEntryPrefixes = @($dateFolders | ForEach-Object { $_.Name + '/' })
+$dateEntryPrefixes = @($dateSources | ForEach-Object { $_.DateFolderName + '/' } | Sort-Object -Unique)
 
 foreach ($subFolderName in @($SubFolderNames) + @($RootFolderNames)) {
     $entriesToWrite = $workByZip[$subFolderName]
@@ -346,7 +618,7 @@ foreach ($subFolderName in @($SubFolderNames) + @($RootFolderNames)) {
                         $jsonFile = $null
                         foreach ($sourceCandidate in $sourceCandidates) {
                             # Read every chosen source fully before changing the staged ZIP.
-                            Copy-FileWithRetry -Source $sourceCandidate.FullName -Destination $stagedFilePath
+                            Copy-SourceCandidateWithRetry -Candidate $sourceCandidate -Destination $stagedFilePath
                             $nonReportReason = Get-NonReportReason -Path $stagedFilePath
                             if ($null -eq $nonReportReason) {
                                 $jsonFile = $sourceCandidate
@@ -421,4 +693,7 @@ foreach ($subFolderName in @($SubFolderNames) + @($RootFolderNames)) {
 
 $summary.ZipsTouched = $zipsTouched.Count
 [pscustomobject]$summary
+} finally {
+    Close-AllSourceArchives
+}
 
